@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}New character · {{ story.display_name }}{% endblock %}
+{% block content %}
+<div class="container-narrow container">
+    <form class="card card--accent stack" method="post" action="/characters/new">
+        <h1 class="card__title">Create a character</h1>
+        {% if error %}<p class="alert alert--bad" role="alert">{{ error }}</p>{% endif %}
+        <div>
+            <label for="name">Name</label>
+            <input id="name" name="name" maxlength="60" required value="{{ form.name or '' }}">
+        </div>
+        <div>
+            <label for="description">Description (300 words at most)</label>
+            <textarea id="description" name="description" required>{{ form.description or '' }}</textarea>
+        </div>
+        <div>
+            <label for="location">Starting location</label>
+            <input id="location" name="location" value="{{ form.location or '' }}">
+        </div>
+        <fieldset class="stack">
+            <legend><label>Starting items (up to 4)</label></legend>
+            {% for i in range(4) %}
+            <input name="item{{ i + 1 }}" aria-label="Item {{ i + 1 }}" value="{{ (form['items'] or ['', '', '', ''])[i] }}">
+            {% endfor %}
+        </fieldset>
+        <div>
+            <label for="visibility">Who can play this character</label>
+            <select id="visibility" name="visibility">
+                <option value="public" {% if form.visibility != "locked" %}selected{% endif %}>Anyone (public)</option>
+                <option value="locked" {% if form.visibility == "locked" %}selected{% endif %}>Only me (locked)</option>
+            </select>
+        </div>
+        <div class="cluster">
+            <button class="btn btn--solid" type="submit">Create and play</button>
+            <a class="btn" href="/characters">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

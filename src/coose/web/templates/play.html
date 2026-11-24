@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ character.name }} · {{ story.display_name }}{% endblock %}
+{% block content %}
+{% set labels = {"action": "! Action", "question": "? Question", "dialogue": "\"\" Dialogue", "command": "/ Command"} %}
+<div class="sidebar-layout">
+    <aside class="stack">
+        <div>
+            <h2 class="card__title">{{ character.name }}</h2>
+            <small>{{ story.display_name }} · {{ world_time.strftime("%a %d %b %Y, %H:%M") }}</small>
+        </div>
+        <nav class="stack" aria-label="Explorer">
+            <a class="tab" href="/?view=chat" {% if view == "chat" %}aria-selected="true"{% endif %}>Chatroom</a>
+            <a class="tab" href="/?view=sheet" {% if view == "sheet" %}aria-selected="true"{% endif %}>Character sheet</a>
+            <a class="tab" href="/?view=rules" {% if view == "rules" %}aria-selected="true"{% endif %}>Character Rules</a>
+            <a class="tab" href="/?view=journal" {% if view == "journal" %}aria-selected="true"{% endif %}>Journal</a>
+            <button class="btn" type="button" onclick="document.getElementById('manual').showModal()">User Manual</button>
+        </nav>
+        <form method="post" action="/leave">
+            <button class="btn btn--danger" type="submit">Leave character</button>
+        </form>
+    </aside>
+
+    <section class="stack">
+        {% if error %}<p class="alert alert--bad" role="alert">{{ error }}</p>{% endif %}
+
+        {% if view == "sheet" %}
+        <div class="prose flow">
+            <h1>{{ character.name }}</h1>
+            <p><strong>Condition:</strong> {{ character.condition }}</p>
+            <p><strong>Location:</strong> {{ character.location or "Unknown" }}</p>
+            <p><strong>Inventory:</strong> {{ character.inventory | join(", ") if character.inventory else "Nothing" }}</p>
+            <p class="doc">{{ character.description }}</p>
+        </div>
+
+        {% elif view == "rules" %}
+        <div class="prose doc">{{ rules }}</div>
+
+        {% elif view == "journal" %}
+        <div class="stack">
+            <label for="journal">Your private notes. They stay in this browser and nobody else sees them.</label>
+            <textarea id="journal" rows="20" data-key="coose-journal:{{ story.name }}:{{ user }}"></textarea>
+        </div>
+        <script>
+            (() => {
+                const box = document.getElementById("journal");
+                box.value = localStorage.getItem(box.dataset.key) || "";
+                box.addEventListener("input", () => localStorage.setItem(box.dataset.key, box.value));
+            })();
+        </script>
+
+        {% else %}
+        <div class="chat" aria-live="polite">
+            {% for m in messages %}
+            <article class="msg msg--{{ m.kind }}" {% if loop.last %}id="latest"{% endif %}>
+                {%- if m.kind in labels -%}
+                <span class="msg__tag">{{ labels[m.kind] }}</span>{% if m.username %}<small>{{ m.username }}</small>{% endif %}
+{{ m.text }}
+                {%- else -%}
+                {{ m.text }}
+                {%- endif -%}
+            </article>
+            {% else %}
+            <p class="text-muted">Nothing has happened yet. Describe what {{ character.name }} does.</p>
+            {% endfor %}
+        </div>
+
+        {% if character.alive %}
+        <form class="stack" method="post" action="/prompt">
+            <div>
+                <label for="kind">Prompt type</label>
+                <select id="kind" name="kind">
+                    <option value="action">! Action: something {{ character.name }} does</option>
+                    <option value="question">? Question: ask what {{ character.name }} knows</option>
+                    <option value="dialogue" disabled>"" Dialogue (arrives with multiplayer)</option>
+                </select>
+            </div>
+            <div>
+                <label for="text">Prompt</label>
+                <textarea id="text" name="text" rows="4" maxlength="4000" required></textarea>
+            </div>
+            <button class="btn btn--solid" type="submit">Send</button>
+            <small>The narrator can take a little while to reply.</small>
+        </form>
+        {% else %}
+        <p class="alert alert--bad">{{ character.name }} has died. Leave this character to choose another.</p>
+        {% endif %}
+        {% endif %}
+    </section>
+</div>
+
+<dialog id="manual">
+    <div class="prose doc">{{ manual }}</div>
+    <form method="dialog"><button class="btn">Close</button></form>
+</dialog>
+{% endblock %}

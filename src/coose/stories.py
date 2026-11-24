@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from . import db
+from . import db, game
 
 REQUIRED_DIRS = ("Premise", "Rulebook", "Characters")
 SETTINGS_PATH = Path("Rulebook") / "Settings.yaml"
@@ -46,6 +46,9 @@ class Story:
     def valid(self) -> bool:
         return not self.problems
 
+    def game_settings(self) -> "game.Settings":
+        return game.Settings.from_dict(self.settings)
+
     @property
     def display_name(self) -> str:
         return self.settings.get("display_name") or self.name
@@ -68,6 +71,10 @@ def load_story(path: Path) -> Story:
                 loaded = {}
             if isinstance(loaded, dict):
                 story.settings = loaded
+                try:
+                    game.Settings.from_dict(loaded)
+                except (game.GameError, TypeError, ValueError) as e:
+                    story.problems.append(f"{SETTINGS_PATH}: {e}")
             else:
                 story.problems.append(f"{SETTINGS_PATH} must be a set of 'key: value' lines")
     return story
@@ -94,9 +101,16 @@ def open_story_db(story: Story) -> sqlite3.Connection:
     """Open (and on first run create) the story's own live-data database."""
     path = story.path / STORY_DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(STORY_SCHEMA)
+    conn.executescript(game.SCHEMA)
+    world_state_file = story.path / "WorldState.md"
+    game.init_world(
+        conn, world_state_file.read_text(encoding="utf-8") if world_state_file.exists() else ""
+    )
     return conn
 
 

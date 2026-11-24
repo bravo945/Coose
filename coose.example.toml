@@ -22,3 +22,8 @@ secret_key_env = "COOSE_SECRET_KEY"
 # Name of the environment variable holding the Claude API key.
 # The key itself never goes in this file or in a story folder.
 api_key_env = "ANTHROPIC_API_KEY"
+
+# The Claude model that narrates, and how much effort it puts into each pass
+# (low, medium, high, xhigh, max). Higher effort is slower and costs more.
+model = "claude-opus-5-5"
+effort = "medium"
