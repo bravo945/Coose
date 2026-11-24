@@ -1,0 +1,13 @@
+<fieldset id="nearby" class="stack">
+    <legend>Here with {{ character.name }}</legend>
+    {% for c in nearby %}
+    <label class="cluster">
+        <input type="checkbox" name="recipient" value="{{ c.id }}">
+        {{ c.name }}
+        {% if c.online %}<span class="module module--ok">player here</span>{% else %}<span class="module">narrator answers</span>{% endif %}
+    </label>
+    {% else %}
+    <small class="text-muted">Nobody else is here.</small>
+    {% endfor %}
+    {% if nearby %}<small>For Dialogue, tick who you are speaking to. Tick nobody to speak to everyone here.</small>{% endif %}
+</fieldset>

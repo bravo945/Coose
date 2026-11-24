@@ -1,4 +1,5 @@
-/* Coose additions on top of the Waybar Gold stylesheet: prompt types only.
+/* Coose additions on top of the Waybar Gold stylesheet: prompt types and the
+   live chat only.
    Colours come from the stylesheet's own tokens. */
 @layer components {
     .chat { display: flex; flex-direction: column; gap: var(--space-3); }
@@ -20,7 +21,10 @@
     .msg--command  { border-inline-start-color: var(--red); }
     .msg--command .msg__tag { color: var(--red); }
 
-    .msg--narration, .msg--answer { background: transparent; border-inline-start-color: var(--surface-2); }
+    .msg--heard    { border-inline-start-color: var(--text); }
+    .msg--reply    { background: transparent; color: var(--text-muted); border-inline-start-color: var(--text); }
+
+    .msg--narration, .msg--answer, .msg--witness { background: transparent; border-inline-start-color: var(--surface-2); }
     .msg--system { background: transparent; color: var(--text-muted); border-inline-start-color: var(--red); }
 
     .doc { white-space: pre-wrap; }

@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS world (
 MAX_NAME_LENGTH = 60
 MAX_DESCRIPTION_WORDS = 300
 MAX_STARTING_ITEMS = 4
-PLAYER_KINDS = ("action", "question")  # dialogue arrives with multiplayer
+PLAYER_KINDS = ("action", "question", "dialogue")
+ABSENT_MODES = ("speak_only", "act_within_reason", "freeze")
 
 
 class GameError(ValueError):
@@ -74,6 +75,8 @@ class Settings:
     players_can_create: bool
     players_per_character: int
     tracked_needs: dict[str, float]  # need -> hours until it runs out
+    ai_characters_public: bool = True
+    absent_characters: str = "speak_only"
 
     @classmethod
     def from_dict(cls, raw: dict) -> "Settings":
@@ -90,7 +93,16 @@ class Settings:
             players_can_create=bool(raw.get("players_can_create", True)),
             players_per_character=max(1, int(raw.get("players_per_character", 3))),
             tracked_needs={str(k): float(v) for k, v in needs.items()},
+            ai_characters_public=bool(raw.get("ai_characters_public", True)),
+            absent_characters=_absent_mode(raw.get("absent_characters", "speak_only")),
         )
+
+
+def _absent_mode(value) -> str:
+    value = str(value)
+    if value not in ABSENT_MODES:
+        raise GameError(f"absent_characters must be one of: {', '.join(ABSENT_MODES)}")
+    return value
 
 
 # --- World values -----------------------------------------------------------
@@ -219,6 +231,44 @@ def create_character(
     return get_character(conn, cur.lastrowid)
 
 
+def create_ai_character(conn: sqlite3.Connection, settings: Settings, *, name: str, description: str,
+                        location: str) -> Character | None:
+    """A character the narrator introduced. Returns None if the name is taken."""
+    try:
+        return create_character(
+            conn, settings, name=name, description=description[:2000], location=location, items=[],
+            visibility="public" if settings.ai_characters_public else "locked", owner=None,
+        )
+    except GameError:
+        return None
+
+
+def find_character_by_name(conn: sqlite3.Connection, name: str) -> Character | None:
+    row = conn.execute("SELECT * FROM characters WHERE name = ?", (name.strip(),)).fetchone()
+    return Character.from_row(row) if row else None
+
+
+def other_characters(conn: sqlite3.Connection, character_id: int) -> list[Character]:
+    """Every living character except this one: the candidates for witnessing."""
+    rows = conn.execute(
+        "SELECT * FROM characters WHERE alive = 1 AND id != ? ORDER BY name COLLATE NOCASE", (character_id,)
+    )
+    return [Character.from_row(r) for r in rows]
+
+
+def characters_here(conn: sqlite3.Connection, character: Character) -> list[Character]:
+    """Living characters at the same location, who can be spoken to directly."""
+    if not character.location.strip():
+        return []
+    return [c for c in other_characters(conn, character.id)
+            if c.location.strip().lower() == character.location.strip().lower()]
+
+
+def players_of(conn: sqlite3.Connection, character_id: int) -> list[str]:
+    rows = conn.execute("SELECT username FROM players WHERE character_id = ?", (character_id,))
+    return [r["username"] for r in rows]
+
+
 def player_counts(conn: sqlite3.Connection) -> dict[int, int]:
     rows = conn.execute("SELECT character_id, COUNT(*) AS n FROM players GROUP BY character_id")
     return {r["character_id"]: r["n"] for r in rows}
@@ -312,36 +362,66 @@ class ActionOutcome:
     memory_add: list[str] = field(default_factory=list)
 
 
+# Read-modify-write of shared rows (clock, working memory, knowledge) happens
+# under this lock, so two characters' results landing at once can't lose each
+# other's changes. Coose runs as one process, so a thread lock is enough.
+_write_lock = threading.Lock()
+
+
 def apply_action(conn: sqlite3.Connection, character: Character, outcome: ActionOutcome) -> Character:
     """Advance the clock and write the Action's consequences, in one transaction."""
     minutes = max(0, int(outcome.minutes_elapsed))
-    inventory = list(character.inventory)
-    for item in outcome.inventory_remove:
-        match = next((i for i in inventory if i.lower() == item.lower()), None)
-        if match:
-            inventory.remove(match)
-    inventory += [i for i in outcome.inventory_add if i.strip()]
-    knowledge = character.knowledge + [k for k in outcome.learned if k.strip()]
-    met = {n.lower() for n in outcome.needs_met}
-    needs = {n: 0 if n.lower() in met else v + minutes for n, v in character.needs.items()}
-    memory = working_memory(conn) + [m for m in outcome.memory_add if m.strip()]
-    with conn:
-        _set(conn, "clock_minutes", str(clock_minutes(conn) + minutes))
-        _set(conn, "working_memory", json.dumps(memory))
-        conn.execute(
-            "UPDATE characters SET location = ?, condition = ?, inventory = ?, knowledge = ?, needs = ?, alive = ? "
-            "WHERE id = ?",
-            (
-                outcome.location.strip() or character.location,
-                outcome.condition.strip() or character.condition,
-                json.dumps(inventory),
-                json.dumps(knowledge),
-                json.dumps(needs),
-                int(bool(outcome.alive)),
-                character.id,
-            ),
-        )
+    with _write_lock:
+        character = get_character(conn, character.id)  # pick up anything witnessed meanwhile
+        inventory = list(character.inventory)
+        for item in outcome.inventory_remove:
+            match = next((i for i in inventory if i.lower() == item.lower()), None)
+            if match:
+                inventory.remove(match)
+        inventory += [i for i in outcome.inventory_add if i.strip()]
+        knowledge = character.knowledge + [k for k in outcome.learned if k.strip()]
+        met = {n.lower() for n in outcome.needs_met}
+        needs = {n: 0 if n.lower() in met else v + minutes for n, v in character.needs.items()}
+        memory = working_memory(conn) + [m for m in outcome.memory_add if m.strip()]
+        with conn:
+            _set(conn, "clock_minutes", str(clock_minutes(conn) + minutes))
+            _set(conn, "working_memory", json.dumps(memory))
+            conn.execute(
+                "UPDATE characters SET location = ?, condition = ?, inventory = ?, knowledge = ?, needs = ?, "
+                "alive = ? WHERE id = ?",
+                (
+                    outcome.location.strip() or character.location,
+                    outcome.condition.strip() or character.condition,
+                    json.dumps(inventory),
+                    json.dumps(knowledge),
+                    json.dumps(needs),
+                    int(bool(outcome.alive)),
+                    character.id,
+                ),
+            )
     return get_character(conn, character.id)
+
+
+def add_knowledge(conn: sqlite3.Connection, character_id: int, facts: list[str]) -> None:
+    facts = [f for f in facts if f.strip()]
+    if not facts:
+        return
+    with _write_lock:
+        character = get_character(conn, character_id)
+        if character is None:
+            return
+        with conn:
+            conn.execute("UPDATE characters SET knowledge = ? WHERE id = ?",
+                         (json.dumps(character.knowledge + facts), character_id))
+
+
+def add_memory(conn: sqlite3.Connection, notes: list[str]) -> None:
+    notes = [n for n in notes if n.strip()]
+    if not notes:
+        return
+    with _write_lock:
+        with conn:
+            _set(conn, "working_memory", json.dumps(working_memory(conn) + notes))
 
 
 # --- One Action at a time per character -------------------------------------

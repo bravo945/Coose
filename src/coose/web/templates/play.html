@@ -1,7 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ character.name }} · {{ story.display_name }}{% endblock %}
 {% block content %}
-{% set labels = {"action": "! Action", "question": "? Question", "dialogue": "\"\" Dialogue", "command": "/ Command"} %}
 <div class="sidebar-layout">
     <aside class="stack">
         <div>
@@ -49,31 +48,19 @@
         </script>
 
         {% else %}
-        <div class="chat" aria-live="polite">
-            {% for m in messages %}
-            <article class="msg msg--{{ m.kind }}" {% if loop.last %}id="latest"{% endif %}>
-                {%- if m.kind in labels -%}
-                <span class="msg__tag">{{ labels[m.kind] }}</span>{% if m.username %}<small>{{ m.username }}</small>{% endif %}
-{{ m.text }}
-                {%- else -%}
-                {{ m.text }}
-                {%- endif -%}
-            </article>
-            {% else %}
-            <p class="text-muted">Nothing has happened yet. Describe what {{ character.name }} does.</p>
-            {% endfor %}
-        </div>
+        {% include "_messages.html" %}
 
         {% if character.alive %}
-        <form class="stack" method="post" action="/prompt">
+        <form class="stack" method="post" action="/prompt" id="prompt">
             <div>
                 <label for="kind">Prompt type</label>
                 <select id="kind" name="kind">
                     <option value="action">! Action: something {{ character.name }} does</option>
                     <option value="question">? Question: ask what {{ character.name }} knows</option>
-                    <option value="dialogue" disabled>"" Dialogue (arrives with multiplayer)</option>
+                    <option value="dialogue">"" Dialogue: something {{ character.name }} says to someone here</option>
                 </select>
             </div>
+            {% include "_nearby.html" %}
             <div>
                 <label for="text">Prompt</label>
                 <textarea id="text" name="text" rows="4" maxlength="4000" required></textarea>
@@ -81,6 +68,38 @@
             <button class="btn btn--solid" type="submit">Send</button>
             <small>The narrator can take a little while to reply.</small>
         </form>
+        <script>
+            (() => {
+                const form = document.getElementById("prompt");
+                form.addEventListener("submit", () => {
+                    const button = form.querySelector("button[type=submit]");
+                    button.disabled = true;
+                    button.textContent = "Waiting for the narrator...";
+                });
+
+                // Live updates: the server says "update", we fetch the chat and who is nearby.
+                let socket;
+                const refresh = async () => {
+                    const response = await fetch("/live", { credentials: "same-origin" });
+                    if (!response.ok) { location.reload(); return; }
+                    const fresh = new DOMParser().parseFromString(await response.text(), "text/html");
+                    const ticked = new Set([...document.querySelectorAll("#nearby input:checked")].map(i => i.value));
+                    for (const id of ["chat", "nearby"]) {
+                        const now = document.getElementById(id), next = fresh.getElementById(id);
+                        if (now && next) now.replaceWith(next);
+                    }
+                    document.querySelectorAll("#nearby input").forEach(i => { i.checked = ticked.has(i.value); });
+                    document.getElementById("latest")?.scrollIntoView({ block: "end" });
+                };
+                const connect = () => {
+                    socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+                    socket.onmessage = refresh;
+                    socket.onclose = () => setTimeout(() => { connect(); refresh(); }, 3000);
+                };
+                setInterval(() => { if (socket?.readyState === WebSocket.OPEN) socket.send("ping"); }, 20000);
+                connect();
+            })();
+        </script>
         {% else %}
         <p class="alert alert--bad">{{ character.name }} has died. Leave this character to choose another.</p>
         {% endif %}

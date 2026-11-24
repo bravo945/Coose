@@ -13,7 +13,7 @@ class FakeNarrator:
         self.calls = []
         self.fail = False
 
-    def action(self, premise, scene, text):
+    def action(self, premise, scene, text, existing=None):
         self.calls.append(("action", scene, text))
         if self.fail:
             raise NarratorError("the AI service returned an error (529)")
@@ -21,12 +21,20 @@ class FakeNarrator:
             narration="You pry the door open. Cold air spills out.",
             minutes_elapsed=5, location="Warehouse", condition="", inventory_add=["crowbar"],
             inventory_remove=[], learned=["The warehouse is empty."], needs_met=[], alive=True,
-            memory_add=["Nobody saw Mara enter the warehouse."],
+            memory_add=["Nobody saw Mara enter the warehouse."], new_characters=[],
         )
 
     def question(self, premise, scene, text):
         self.calls.append(("question", scene, text))
         return "You don't know who runs the town."
+
+    def witnesses(self, premise, scene, text, result, others):
+        self.calls.append(("witnesses", scene, text))
+        return []
+
+    def reply_as(self, premise, scene, speaker, text, mode):
+        self.calls.append(("reply_as", scene, text))
+        return "Leave me alone."
 
 
 @pytest.fixture
@@ -86,10 +94,10 @@ def test_narrator_failure_changes_nothing(client, narrator, config):
     assert game.clock_minutes(sconn) == 0
 
 
-def test_dialogue_not_available_yet(client, narrator):
+def test_dialogue_with_nobody_here(client, narrator):
     create(client)
     r = client.post("/prompt", data={"kind": "dialogue", "text": "Hello"})
-    assert "isn't available yet" in html.unescape(r.text)
+    assert "nobody here" in html.unescape(r.text)
     assert narrator.calls == []
 
 
