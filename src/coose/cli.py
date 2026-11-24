@@ -7,12 +7,16 @@ from typing import Optional
 
 import typer
 
-from . import accounts, db, rounds, stories
+from . import accounts, controls, db, rounds, stories
 from .config import Config
 
 app = typer.Typer(help="Run and manage a Coose server.", no_args_is_help=True)
 account_app = typer.Typer(help="Create and manage player accounts.", no_args_is_help=True)
 app.add_typer(account_app, name="account")
+admin_app = typer.Typer(help="Appoint story admins.", no_args_is_help=True)
+app.add_typer(admin_app, name="admin")
+schedule_app = typer.Typer(help="Opening hours: when stories open and close by themselves.", no_args_is_help=True)
+app.add_typer(schedule_app, name="schedule")
 
 _state: dict = {}
 
@@ -88,6 +92,100 @@ def account_list() -> None:
     typer.echo("\n".join(names) if names else "No accounts yet.")
 
 
+# --- Story admins -------------------------------------------------------------
+
+def _story(name: str) -> stories.Story:
+    try:
+        return stories.find_story(_cfg().stories_dir, name)
+    except stories.StoryError as e:
+        _fail(str(e))
+
+
+@admin_app.command("add")
+def admin_add(username: str, story: str) -> None:
+    """Make USERNAME a story admin of STORY."""
+    s = _story(story)
+    try:
+        controls.add_admin(_conn(), username, s.name)
+    except controls.ControlError as e:
+        _fail(str(e))
+    typer.echo(f"'{username}' is now a story admin of '{s.display_name}'.")
+
+
+@admin_app.command("remove")
+def admin_remove(username: str, story: str) -> None:
+    """Stop USERNAME being a story admin of STORY."""
+    s = _story(story)
+    try:
+        controls.remove_admin(_conn(), username, s.name)
+    except controls.ControlError as e:
+        _fail(str(e))
+    typer.echo(f"'{username}' is no longer a story admin of '{s.display_name}'.")
+
+
+@admin_app.command("list")
+def admin_list(story: str) -> None:
+    """List STORY's admins, including any listed in its Settings.yaml."""
+    names = controls.admins(_conn(), _story(story))
+    typer.echo("\n".join(names) if names else "No story admins yet.")
+
+
+# --- Caps and schedules ---------------------------------------------------------
+
+@app.command("cap")
+def cap(
+    story: str,
+    actions: Optional[int] = typer.Option(None, "--actions", help="Pause after this many more Actions."),
+    rounds_: Optional[int] = typer.Option(None, "--rounds", help="Pause after this many more round changes."),
+    clear: bool = typer.Option(False, "--clear", help="Remove the cap."),
+) -> None:
+    """Limit how much STORY can be played before it pauses itself. Caps never reset on their own."""
+    s = _story(story)
+    if clear:
+        controls.clear_cap(_conn(), s.name)
+        typer.echo(f"'{s.display_name}' has no cap now.")
+        return
+    try:
+        controls.set_cap(_conn(), s, actions, rounds_)
+    except controls.ControlError as e:
+        _fail(str(e))
+    typer.echo(f"'{s.display_name}': {controls.describe_cap(_conn(), s)}.")
+
+
+@schedule_app.command("add")
+def schedule_add(
+    story: str,
+    days: str = typer.Argument(..., help="daily, weekdays, weekends, or days like fri,sat"),
+    start: str = typer.Argument(..., metavar="FROM", help="Opening time, e.g. 19:00"),
+    end: str = typer.Argument(..., metavar="TO", help="Closing time, e.g. 23:00 (earlier than FROM runs past midnight)"),
+) -> None:
+    """Open STORY on DAYS from FROM to TO, in the server machine's local time."""
+    s = _story(story)
+    try:
+        span = controls.add_span(_conn(), s.name, days, start, end)
+    except controls.ControlError as e:
+        _fail(str(e))
+    typer.echo(f"'{s.display_name}' opens {span.describe()}. Schedules run while `coose serve` is running.")
+
+
+@schedule_app.command("list")
+def schedule_list() -> None:
+    """Show every story's opening hours."""
+    found = controls.all_schedules(_conn())
+    if not found:
+        typer.echo("No schedules.")
+    for name, spans in found.items():
+        typer.echo(f"{name}: " + "; ".join(s.describe() for s in spans))
+
+
+@schedule_app.command("clear")
+def schedule_clear(story: str) -> None:
+    """Remove all of STORY's opening hours."""
+    s = _story(story)
+    controls.clear_schedule(_conn(), s.name)
+    typer.echo(f"'{s.display_name}' has no schedule now.")
+
+
 # --- Stories ----------------------------------------------------------------
 
 @app.command("stories")
@@ -105,6 +203,8 @@ def list_stories() -> None:
 @app.command("run")
 def run(story: str) -> None:
     """Make STORY the running story. The previous one is paused and saved."""
+    if controls.story_cap_reached(_conn(), _story(story)):
+        _fail(f"'{story}' has reached its cap. Raise it with `coose cap {story} ...` or remove it with --clear.")
     try:
         s = stories.run_story(_conn(), _cfg().stories_dir, story)
     except stories.StoryError as e:
@@ -125,6 +225,9 @@ def pause() -> None:
 @app.command("resume")
 def resume() -> None:
     """Resume the running story."""
+    st = stories.status(_conn())
+    if st.story and controls.story_cap_reached(_conn(), _story(st.story)):
+        _fail(f"'{st.story}' has reached its cap. Raise it with `coose cap {st.story} ...` or remove it with --clear.")
     try:
         stories.resume(_conn())
     except stories.StoryError as e:
@@ -178,6 +281,12 @@ def status() -> None:
         typer.echo("No story is running.")
     else:
         typer.echo(f"Story: {st.story}  ({'paused' if st.paused else 'online'})")
+        s = _story(st.story)
+        typer.echo(f"Cap: {controls.describe_cap(_conn(), s)}")
+        admins = controls.admins(_conn(), s)
+        typer.echo(f"Story admins: {', '.join(admins) or 'none'}")
+    for name, spans in controls.all_schedules(_conn()).items():
+        typer.echo(f"Schedule for {name}: " + "; ".join(sp.describe() for sp in spans))
     typer.echo(f"Accounts: {len(accounts.list_accounts(_conn()))}")
 
 
@@ -233,7 +342,7 @@ def serve() -> None:
     cfg = _cfg()
     if not cfg.secret_key():
         _fail(f"Set the {cfg.secret_key_env} environment variable before serving (see coose.example.toml).")
-    uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port, proxy_headers=True)
+    uvicorn.run(create_app(cfg, run_scheduler=True), host=cfg.host, port=cfg.port, proxy_headers=True)
 
 
 if __name__ == "__main__":

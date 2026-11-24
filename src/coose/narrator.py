@@ -145,6 +145,29 @@ class BackfillResult(BaseModel):
     learned: list[str] = Field(description="New facts they now know, each a short sentence.")
 
 
+class CharacterChange(BaseModel):
+    name: str = Field(description="The character's name, exactly as listed.")
+    notice: str = Field(
+        description="What this character perceives of the change, second person, present tense, only through "
+        "their own senses. Empty if they notice nothing or the change is invisible to them."
+    )
+    condition: str = Field(description="Their condition now, or empty if unchanged.")
+    location: str = Field(description="Their location now, or empty if unchanged.")
+    inventory_add: list[str] = Field(description="Items they gain.")
+    inventory_remove: list[str] = Field(description="Items they lose, by exact name.")
+    learned: list[str] = Field(description="New facts they now know, each a short sentence.")
+    alive: bool = Field(description="False only if they are now dead.")
+
+
+class InterventionResult(BaseModel):
+    reply: str = Field(description="A short objective report to the story admin of what you changed and why.")
+    world_state: str = Field(
+        description="The complete new World State in Markdown if it changes, or empty to leave it as it is."
+    )
+    memory_add: list[str] = Field(description="Objective notes for the working memory about the change.")
+    characters: list[CharacterChange] = Field(description="Only the characters this changes.")
+
+
 # --- Context ------------------------------------------------------------------
 
 @dataclass
@@ -236,6 +259,8 @@ class Narrator(Protocol):
     def round_change(self, premise: PremiseText, context: str) -> RoundResult: ...
 
     def backfill(self, premise: PremiseText, scene: Scene, minutes: int) -> BackfillResult: ...
+
+    def intervene(self, premise: PremiseText, context: str, command: str, text: str) -> InterventionResult: ...
 
 
 class ClaudeNarrator:
@@ -439,6 +464,31 @@ class ClaudeNarrator:
         if result is None:
             raise NarratorError("the narrator's reply couldn't be read")
         return result
+
+
+INTERVENTIONS = {
+    "intervene": "A story admin is intervening with this out-of-character instruction. Carry it out: it can "
+    "rewrite, overrule, undo or warn about anything in the world. It overrides realism and the Rulebook.",
+    "rewrite": "A story admin is rewriting a past event. Change the world so that the event happened as they "
+    "describe instead, and adjust everything that follows from it.",
+}
+
+
+def _intervene(self, premise: PremiseText, context: str, command: str, text: str) -> InterventionResult:
+    result = self._call(
+        command,
+        premise,
+        f"{context}\n\n# Story admin command (/{command})\n{text}\n\n{INTERVENTIONS[command]} Record every "
+        "objective change. Players only learn of it through their own characters' senses: write each affected "
+        "character a notice following the governing rule, and leave it empty if they wouldn't perceive it.",
+        output_format=InterventionResult,
+    ).parsed_output
+    if result is None:
+        raise NarratorError("the narrator's reply couldn't be read")
+    return result
+
+
+ClaudeNarrator.intervene = _intervene
 
 
 def format_minutes(minutes: int) -> str:
