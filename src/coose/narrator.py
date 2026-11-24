@@ -68,7 +68,11 @@ class AuthorResult(BaseModel):
     narration: str = Field(
         description="What the acting character perceives, second person, present tense. Only what they could notice."
     )
-    minutes_elapsed: int = Field(description="In-game minutes the action takes. 0 for something instant.")
+    minutes_elapsed: int = Field(
+        description="In-game minutes the whole action takes as the player stated it, 0 for something instant. "
+        "A journey or long task counts in full (a walk of several hours is several hours), even if the "
+        "narration only covers its start; long actions become a time skip."
+    )
     location: str = Field(description="The character's location afterwards, or empty if unchanged.")
     condition: str = Field(description="The character's new condition, or empty if unchanged.")
     inventory_add: list[str] = Field(description="Items the character gains.")
@@ -377,7 +381,9 @@ class ClaudeNarrator:
             "somewhere else usually means they notice nothing. For each witness, write what they perceive "
             "from their own point of view and what they now know. Witnesses see behaviour, not thoughts: "
             f"never reveal {actor.name}'s intentions, the wording of the attempt, or anything the witness "
-            "couldn't perceive. If they don't know who someone is, describe them instead of naming them.",
+            "couldn't perceive. If they don't know who someone is, describe them instead of naming them. "
+            "Likewise never reveal anything about the actor's background, origin, past or profession that the "
+            "witness hasn't been told or seen for themselves; a description is only what they can see.",
             output_format=WitnessPass,
         ).parsed_output
         if response is None:
@@ -410,7 +416,8 @@ class ClaudeNarrator:
             "objective World State. Review the working memory and keep only what the next round still needs. "
             "Update every living character, and write each one a short in-character notice of what they "
             "noticed changing. Notices follow the governing rule: only what that character could perceive or "
-            "already knows. Also write the Logbook entry for the round that ended.",
+            "already knows, and never details about other characters (names, origins, pasts) they haven't "
+            "learned in play. Also write the Logbook entry for the round that ended.",
             output_format=RoundResult,
         ).parsed_output
         if result is None:

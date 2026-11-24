@@ -522,6 +522,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
                 game.add_message(sconn, speaker.id, "system", f"{t.name} didn't answer: {narrator_failed(e)}")
                 continue
             game.add_message(sconn, speaker.id, "heard", f'{t.name} says: "{reply}"')
+            game.add_memory(sconn, [f'{t.name} (player away) answered {speaker.name}: "{reply[:300]}"'])
             for o in targets:
                 if o.id != t.id:
                     game.add_message(sconn, o.id, "heard", f'{t.name} says: "{reply}"')
