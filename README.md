@@ -2,7 +2,12 @@
 
 Coose turns any worldbuilding universe into a multiplayer, prompt-based roleplay game. An AI interprets what each player's character does and replies with only what that character would perceive or know: subjective roleplay in an objective world.
 
-This repository holds the Coose server. It is built in milestones; this is **milestone 1**: accounts, login, story loading and the owner's command line. Play itself (characters, prompts, the AI) arrives in milestone 2.
+This repository holds the Coose server. It is built in milestones. So far:
+
+- **Milestone 1:** accounts, login, story loading and the owner's command line.
+- **Milestone 2:** one player, one character. Players pick or create a character and play it in a chatroom with Actions (two AI passes: a Responder judges the attempt, an Author decides the consequences) and Questions (answered only from what the character knows). The server keeps the world clock, hidden needs, each character's knowledge, and the narrator's working memory.
+
+Multiplayer (Dialogue, witnesses, live updates) arrives in milestone 3.
 
 ## Setup
 
@@ -13,6 +18,7 @@ git clone https://github.com/bravo945/Coose.git && cd Coose
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e .
 cp coose.example.toml coose.toml          # then edit it if needed
+export ANTHROPIC_API_KEY="..."            # the Claude API key that pays for narration
 export COOSE_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
 ```
 

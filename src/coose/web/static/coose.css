@@ -1,0 +1,27 @@
+/* Coose additions on top of the Waybar Gold stylesheet: prompt types only.
+   Colours come from the stylesheet's own tokens. */
+@layer components {
+    .chat { display: flex; flex-direction: column; gap: var(--space-3); }
+
+    .msg {
+        padding: var(--space-3) var(--space-4);
+        background: var(--surface-1);
+        border-inline-start: 3px solid var(--gold-dim);
+        white-space: pre-wrap;
+    }
+    .msg__tag { margin-inline-end: var(--space-2); }
+
+    .msg--action   { border-inline-start-color: var(--gold); }
+    .msg--action .msg__tag { color: var(--gold); }
+    .msg--dialogue { border-inline-start-color: var(--text); }
+    .msg--dialogue .msg__tag { color: var(--text); }
+    .msg--question { border-inline-start-color: var(--blue); }
+    .msg--question .msg__tag { color: var(--blue); }
+    .msg--command  { border-inline-start-color: var(--red); }
+    .msg--command .msg__tag { color: var(--red); }
+
+    .msg--narration, .msg--answer { background: transparent; border-inline-start-color: var(--surface-2); }
+    .msg--system { background: transparent; color: var(--text-muted); border-inline-start-color: var(--red); }
+
+    .doc { white-space: pre-wrap; }
+}

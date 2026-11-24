@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Choose a character · {{ story.display_name }}{% endblock %}
+{% block content %}
+<div class="stack">
+    <h1>Choose a character</h1>
+    {% if error %}<p class="alert alert--bad" role="alert">{{ error }}</p>{% endif %}
+    {% if characters %}
+    <div class="grid">
+        {% for c in characters %}
+        {% set n = counts.get(c.id, 0) %}
+        <form class="card" method="post" action="/characters/{{ c.id }}/join">
+            <h2 class="card__title">{{ c.name }}</h2>
+            <p class="cluster">
+                {% if c.visibility == "locked" %}<span class="badge">Locked</span>{% endif %}
+                {% if not c.owner %}<span class="badge badge--info">Story character</span>{% endif %}
+                <small>{{ n }} of {{ limit }} playing</small>
+            </p>
+            <p>{{ c.description | truncate(220) }}</p>
+            <button class="btn" type="submit" {% if n >= limit %}disabled{% endif %}>Play as {{ c.name }}</button>
+        </form>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-muted">There are no characters you can play yet.</p>
+    {% endif %}
+    {% if can_create %}
+    <p><a class="btn btn--solid" href="/characters/new">Create a character</a></p>
+    {% endif %}
+</div>
+{% endblock %}

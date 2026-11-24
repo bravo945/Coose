@@ -18,6 +18,8 @@ class Config:
     stories_dir: Path
     secret_key_env: str
     api_key_env: str
+    model: str = "claude-opus-5-5"
+    effort: str = "medium"
 
     @property
     def server_db_path(self) -> Path:
@@ -44,6 +46,8 @@ class Config:
             stories_dir=_resolve(base, server.get("stories_dir", "stories")),
             secret_key_env=server.get("secret_key_env", "COOSE_SECRET_KEY"),
             api_key_env=ai.get("api_key_env", "ANTHROPIC_API_KEY"),
+            model=ai.get("model", "claude-opus-5-5"),
+            effort=ai.get("effort", "medium"),
         )
 
 
