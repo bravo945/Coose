@@ -1,0 +1,15 @@
+# Local configuration and live data
+coose.toml
+data/
+stories/
+.coose/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
