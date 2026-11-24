@@ -6,7 +6,10 @@ import secrets
 from contextlib import contextmanager
 from pathlib import Path
 
+import asyncio
 import logging
+import threading
+from collections import defaultdict
 
 from fastapi import BackgroundTasks, FastAPI, Form, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -14,9 +17,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from .. import accounts, db, game, stories
+from .. import accounts, db, game, rounds, stories
 from ..config import Config
-from ..narrator import AuthorResult, ClaudeNarrator, Narrator, NarratorError, Scene, load_premise
+from ..narrator import AuthorResult, ClaudeNarrator, Narrator, NarratorError, Scene, format_minutes, load_premise
 from .live import Hub
 
 log = logging.getLogger(__name__)
@@ -40,6 +43,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
     templates = Jinja2Templates(directory=HERE / "templates")
     narrator = narrator or ClaudeNarrator(config.model, config.effort, config.api_key_env)
     hub = app.state.hub = Hub()
+    round_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)  # one round change at a time
 
     def conn():
         return db.connect(config.server_db_path)
@@ -83,6 +87,22 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             for c in game.characters_here(sconn, character)
         ]
 
+    def live_context(story, sconn, character: game.Character) -> dict:
+        """Everything on the play page that can change while it's open."""
+        settings = story.game_settings()
+        return dict(
+            character=character,
+            messages=game.recent_messages(sconn, character.id),
+            nearby=nearby(story.name, sconn, character),
+            world_time=game.world_time(sconn, settings),
+            round_number=rounds.current_round(sconn),
+            round_vote=settings.round_vote,
+            votes=rounds.votes(sconn),
+            online=hub.online_users(story.name),
+            skipping=rounds.is_skipping(sconn, character.id),
+            skip_coming=bool(rounds.pending_skips(sconn)),
+        )
+
     def make_scene(sconn, story, character: game.Character) -> Scene:
         settings = story.game_settings()
         return Scene(
@@ -91,9 +111,16 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             world_state=game.world_state(sconn),
             working_memory=game.working_memory(sconn),
             character=character,
-            need_levels=game.need_levels(character, settings),
+            need_levels=game.need_levels(sconn, character, settings),
             recent=game.recent_messages(sconn, character.id, limit=30),
+            round_number=rounds.current_round(sconn),
         )
+
+    def tell_online(story_name: str, sconn, text: str, exclude: int | None = None) -> None:
+        targets = [cid for cid in hub.online_characters(story_name) if cid != exclude]
+        for cid in targets:
+            game.add_message(sconn, cid, "system", text)
+        hub.notify(story_name, targets)
 
     # --- Login ------------------------------------------------------------
 
@@ -136,7 +163,6 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             character = game.current_character(sconn, user)
             if character is None:
                 return to("/characters")
-            settings = story.game_settings()
             view = request.query_params.get("view", "chat")
             rules_file = story.path / "Rulebook" / "Character Rules.md"
             manual_file = story.path / "UserManual.md"
@@ -144,11 +170,8 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
                 request,
                 "play.html",
                 story=story,
-                character=character,
                 view=view,
-                messages=game.recent_messages(sconn, character.id),
-                nearby=nearby(story.name, sconn, character),
-                world_time=game.world_time(sconn, settings),
+                **live_context(story, sconn, character),
                 rules=rules_file.read_text(encoding="utf-8") if rules_file.exists() else "",
                 manual=manual_file.read_text(encoding="utf-8") if manual_file.exists() else "",
                 error=request.session.pop("error", None),
@@ -279,6 +302,13 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             if len(text) > MAX_PROMPT_CHARS:
                 request.session["error"] = f"Prompts can be at most {MAX_PROMPT_CHARS} characters."
                 return to("/")
+            if round_locks[story.name].locked():
+                request.session["error"] = "The round is changing. Try again in a moment."
+                return to("/")
+            if kind != "question" and rounds.is_skipping(sconn, character.id):
+                request.session["error"] = (f"{character.name} is busy until the next round. "
+                                            "You can still ask Questions.")
+                return to("/")
             lock = game.character_lock(story.name, character.id)
             if not lock.acquire(blocking=False):
                 request.session["error"] = f"{character.name} is still busy with the last prompt."
@@ -321,15 +351,113 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             game.add_message(sconn, character.id, "system", narrator_failed(e))
             hub.notify(story.name, [character.id])
             return
-        game.apply_action(sconn, character, game.ActionOutcome(**result.model_dump(exclude={"new_characters"})))
+        skip = result.minutes_elapsed > settings.skip_threshold_minutes
+        game.apply_action(sconn, character, game.ActionOutcome(**result.model_dump(exclude={"new_characters"})),
+                          advance_clock=not skip)
         game.add_message(sconn, character.id, "narration", result.narration)
         for new in result.new_characters:
             game.create_ai_character(sconn, settings, name=new.name, description=new.description,
                                      location=new.location)
+        skip_now = False
+        if skip:
+            rounds.add_skip(sconn, character.id, result.minutes_elapsed, text)
+            game.add_message(
+                sconn, character.id, "system",
+                f"This takes about {format_minutes(result.minutes_elapsed)}, so time will skip ahead at the next "
+                f"round. Until then {character.name} is occupied, but you can still ask Questions.",
+            )
+            tell_online(story.name, sconn, "A time skip is coming at the next round.", exclude=character.id)
+            # Nobody else is here to keep playing, so the skip happens at once.
+            mine = {u.lower() for u in game.players_of(sconn, character.id)}
+            skip_now = all(u.lower() in mine for u in hub.online_users(story.name))
         hub.notify(story.name, [character.id])
         if others:
             # Runs after the acting player gets their page back, so they don't wait on it.
             background.add_task(judge_witnesses, story.name, scene, text, result, [o.id for o in others], premise)
+        if skip_now or rounds.round_due(sconn, settings):
+            background.add_task(change_round, story.name)
+
+    def change_round(story_name: str) -> None:
+        """Close the round: one AI pass over the whole world, then Logbook, notices and a snapshot."""
+        lock = round_locks[story_name]
+        if not lock.acquire(blocking=False):
+            return  # already changing
+        try:
+            story = stories.find_story(config.stories_dir, story_name)
+            sconn = stories.open_story_db(story)
+            try:
+                settings = story.game_settings()
+                online = hub.online_characters(story_name)
+                context = rounds.round_context(sconn, settings, story.display_name, online)
+                try:
+                    result = narrator.round_change(load_premise(story.path), context)
+                except NarratorError as e:
+                    log.warning("Round change in %s failed: %s", story_name, e)
+                    tell_online(story_name, sconn, f"The round change failed ({e}). It will be tried again "
+                                "after the next Action, or by voting.")
+                    return
+                outcome = rounds.RoundOutcome(
+                    **result.model_dump(exclude={"characters"}),
+                    characters=[rounds.CharacterUpdate(**c.model_dump()) for c in result.characters],
+                )
+                rounds.apply_round(sconn, story.path, settings, outcome, online)
+                hub.notify_story(story_name)
+            finally:
+                sconn.close()
+        finally:
+            lock.release()
+
+    def run_backfill(story_name: str, character_id: int) -> None:
+        """Write a backstory for a character who sat out a skip while offline."""
+        lock = game.character_lock(story_name, character_id)
+        if not lock.acquire(timeout=300):
+            return
+        try:
+            story = stories.find_story(config.stories_dir, story_name)
+            sconn = stories.open_story_db(story)
+            try:
+                minutes = rounds.take_backfill(sconn, character_id)
+                character = game.get_character(sconn, character_id)
+                if not minutes or character is None or not character.alive:
+                    return
+                try:
+                    result = narrator.backfill(load_premise(story.path), make_scene(sconn, story, character), minutes)
+                except NarratorError as e:
+                    rounds.owe_backfill(sconn, character_id, minutes)
+                    game.add_message(sconn, character_id, "system",
+                                     f"The narrator couldn't write what happened while you were away: {e}. "
+                                     "It will try again when you next come back.")
+                    hub.notify(story_name, [character_id])
+                    return
+                game.apply_action(sconn, character, game.ActionOutcome(
+                    narration=result.narration, minutes_elapsed=0, location=result.location,
+                    condition=result.condition, learned=result.learned,
+                ), count=False)
+                game.add_message(sconn, character_id, "narration",
+                                 f"While you were away ({format_minutes(minutes)}): {result.narration}")
+                hub.notify(story_name, [character_id])
+            finally:
+                sconn.close()
+        finally:
+            lock.release()
+
+    @app.post("/vote")
+    def vote(request: Request, background: BackgroundTasks):
+        user = current_user(request)
+        if not user:
+            return to("/login")
+        with running_story() as (story, sconn):
+            if story is None or game.current_character(sconn, user) is None:
+                return to("/")
+            if not story.game_settings().round_vote:
+                request.session["error"] = "This story doesn't use round votes."
+                return to("/")
+            rounds.add_vote(sconn, user)
+            online = hub.online_users(story.name) or [user]
+            if rounds.vote_passes(sconn, online):
+                background.add_task(change_round, story.name)
+            hub.notify_story(story.name)
+        return to("/")
 
     def judge_witnesses(story_name: str, scene: Scene, text: str, result: AuthorResult,
                         candidate_ids: list[int], premise: str) -> None:
@@ -408,13 +536,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             character = game.current_character(sconn, user) if story else None
             if character is None:
                 return HTMLResponse("", status_code=409)  # the page reloads and finds its way
-            return render(
-                request,
-                "_live.html",
-                character=character,
-                messages=game.recent_messages(sconn, character.id),
-                nearby=nearby(story.name, sconn, character),
-            )
+            return render(request, "_live.html", story=story, **live_context(story, sconn, character))
 
     @app.websocket("/ws")
     async def live_socket(ws: WebSocket):
@@ -433,6 +555,13 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
         await ws.accept()
         handle = hub.add(st.story, character.id, ws, user)
         hub.notify_story(st.story, exclude=handle)  # presence changed
+        sconn = stories.open_story_db(stories.find_story(config.stories_dir, st.story))
+        try:
+            owed = character.id in rounds.backfills(sconn)
+        finally:
+            sconn.close()
+        if owed:
+            asyncio.get_running_loop().run_in_executor(None, run_backfill, st.story, character.id)
         try:
             while True:
                 await ws.receive_text()  # the page pings to keep tunnels from timing out

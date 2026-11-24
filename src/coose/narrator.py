@@ -7,6 +7,8 @@ acting player sees. When other characters exist, a third pass judges who
 witnessed the Action and what each of them perceived. A Question takes one
 pass, answered only from what the character could know. When someone speaks
 to a character nobody is playing right now, one pass answers in their voice.
+A round change is one pass over the whole world (see rounds.py), and a
+character returning after a skip they sat out gets a backstory pass.
 
 The story's Premise and Rulebook go first in every request as a cached
 system prompt; everything that changes per prompt comes after it.
@@ -99,6 +101,45 @@ class WitnessPass(BaseModel):
     )
 
 
+class CharacterRoundUpdate(BaseModel):
+    name: str = Field(description="The character's name, exactly as listed.")
+    notice: str = Field(
+        description="A short in-character notice for this character's player: only what they noticed changing "
+        "since the last round, second person, one to three sentences. Empty if they noticed nothing. For an "
+        "offline character the narrator plays through a skip, say briefly what they spent the time doing."
+    )
+    condition: str = Field(description="Their condition now, or empty if unchanged.")
+    location: str = Field(description="Their location now, or empty if unchanged.")
+    learned: list[str] = Field(description="New facts they now know, each a short sentence.")
+    alive: bool = Field(description="False only if they died.")
+
+
+class RoundResult(BaseModel):
+    title: str = Field(description="A short title for the round that just ended, a few words.")
+    summary: str = Field(description="An objective summary of the round for the Logbook. A short paragraph.")
+    relevant_characters: str = Field(description="The characters who mattered this round and their status.")
+    deaths: str = Field(description="Who died this round and how, or empty if nobody did.")
+    world_state: str = Field(
+        description="The complete new World State in Markdown: the objective condition of the world now, "
+        "replacing the old one. Keep everything still true; fold in lasting changes from the working memory."
+    )
+    working_memory: list[str] = Field(
+        description="The working memory notes still relevant for the next round. Drop what no longer matters "
+        "and anything now recorded in the World State or a character."
+    )
+    characters: list[CharacterRoundUpdate] = Field(description="One entry per living character listed.")
+
+
+class BackfillResult(BaseModel):
+    narration: str = Field(
+        description="What the character did and went through while their player was away, second person, past "
+        "tense, a short paragraph."
+    )
+    location: str = Field(description="Where they are now, or empty if unchanged.")
+    condition: str = Field(description="Their condition now, or empty if unchanged.")
+    learned: list[str] = Field(description="New facts they now know, each a short sentence.")
+
+
 # --- Context ------------------------------------------------------------------
 
 @dataclass
@@ -112,11 +153,12 @@ class Scene:
     character: game.Character
     need_levels: dict[str, str]
     recent: list[game.Message]
+    round_number: int = 1
 
     def render(self) -> str:
         c = self.character
         lines = [
-            f"# Current moment\nIn-game time: {self.world_time:%A %d %B %Y, %H:%M}",
+            f"# Current moment\nIn-game time: {self.world_time:%A %d %B %Y, %H:%M} (round {self.round_number})",
             f"# World state (objective, never shown to players)\n{self.world_state.strip() or '(not yet written)'}",
             "# Working memory (objective notes for this round)\n"
             + ("\n".join(f"- {m}" for m in self.working_memory) or "(empty)"),
@@ -185,6 +227,10 @@ class Narrator(Protocol):
                   others: list[game.Character]) -> list[WitnessReport]: ...
 
     def reply_as(self, premise: PremiseText, scene: Scene, speaker: str, text: str, mode: str) -> str: ...
+
+    def round_change(self, premise: PremiseText, context: str) -> RoundResult: ...
+
+    def backfill(self, premise: PremiseText, scene: Scene, minutes: int) -> BackfillResult: ...
 
 
 class ClaudeNarrator:
@@ -326,3 +372,39 @@ class ClaudeNarrator:
         if not reply:
             raise NarratorError("the narrator gave an empty reply")
         return reply
+
+    def round_change(self, premise: PremiseText, context: str) -> RoundResult:
+        result = self._call(
+            premise,
+            f"{context}\n\n"
+            "You are closing this round and opening the next. Reconcile everything that happened into the "
+            "objective World State. Review the working memory and keep only what the next round still needs. "
+            "Update every living character, and write each one a short in-character notice of what they "
+            "noticed changing. Notices follow the governing rule: only what that character could perceive or "
+            "already knows. Also write the Logbook entry for the round that ended.",
+            output_format=RoundResult,
+        ).parsed_output
+        if result is None:
+            raise NarratorError("the narrator's reply couldn't be read")
+        return result
+
+    def backfill(self, premise: PremiseText, scene: Scene, minutes: int) -> BackfillResult:
+        result = self._call(
+            premise,
+            f"{scene.render()}\n\n# Time away\n{scene.character.name}'s player was offline while "
+            f"{format_minutes(minutes)} passed in a time skip. The character was left untouched. Now that "
+            "their player is back, write a plausible backstory for that time, consistent with who they are, "
+            "where they were and the world state, and record what changed. Don't make big decisions for them.",
+            output_format=BackfillResult,
+        ).parsed_output
+        if result is None:
+            raise NarratorError("the narrator's reply couldn't be read")
+        return result
+
+
+def format_minutes(minutes: int) -> str:
+    """In-game durations in words: 90 -> '1 hour 30 minutes'."""
+    days, rest = divmod(int(minutes), 24 * 60)
+    hours, mins = divmod(rest, 60)
+    parts = [f"{n} {unit}{'s' if n != 1 else ''}" for n, unit in ((days, "day"), (hours, "hour"), (mins, "minute")) if n]
+    return " ".join(parts) or "no time"

@@ -3,10 +3,7 @@
 {% block content %}
 <div class="sidebar-layout">
     <aside class="stack">
-        <div>
-            <h2 class="card__title">{{ character.name }}</h2>
-            <small>{{ story.display_name }} · {{ world_time.strftime("%a %d %b %Y, %H:%M") }}</small>
-        </div>
+        {% include "_status.html" %}
         <nav class="stack" aria-label="Explorer">
             <a class="tab" href="/?view=chat" {% if view == "chat" %}aria-selected="true"{% endif %}>Chatroom</a>
             <a class="tab" href="/?view=sheet" {% if view == "sheet" %}aria-selected="true"{% endif %}>Character sheet</a>
@@ -84,7 +81,7 @@
                     if (!response.ok) { location.reload(); return; }
                     const fresh = new DOMParser().parseFromString(await response.text(), "text/html");
                     const ticked = new Set([...document.querySelectorAll("#nearby input:checked")].map(i => i.value));
-                    for (const id of ["chat", "nearby"]) {
+                    for (const id of ["status", "chat", "nearby"]) {
                         const now = document.getElementById(id), next = fresh.getElementById(id);
                         if (now && next) now.replaceWith(next);
                     }

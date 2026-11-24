@@ -7,7 +7,7 @@ from typing import Optional
 
 import typer
 
-from . import accounts, db, stories
+from . import accounts, db, rounds, stories
 from .config import Config
 
 app = typer.Typer(help="Run and manage a Coose server.", no_args_is_help=True)
@@ -130,6 +130,44 @@ def resume() -> None:
     except stories.StoryError as e:
         _fail(str(e))
     typer.echo("Story resumed.")
+
+
+@app.command("rounds")
+def list_rounds(story: str) -> None:
+    """List the rounds STORY can be rolled back to."""
+    try:
+        s = stories.find_story(_cfg().stories_dir, story)
+    except stories.StoryError as e:
+        _fail(str(e))
+    available = rounds.snapshots(s.path)
+    typer.echo(f"Rounds you can roll back to: {', '.join(map(str, available))}" if available
+               else "No snapshots yet. The story hasn't been run.")
+
+
+@app.command("rollback")
+def rollback(
+    story: str,
+    round_number: int = typer.Argument(..., metavar="ROUND"),
+    yes: bool = typer.Option(False, "--yes", help="Don't ask for confirmation."),
+) -> None:
+    """Restore STORY to the start of ROUND. Everything after that is undone."""
+    try:
+        s = stories.find_story(_cfg().stories_dir, story)
+    except stories.StoryError as e:
+        _fail(str(e))
+    st = stories.status(_conn())
+    if st.story == s.name and st.online:
+        _fail(f"'{s.name}' is online. Pause it first with: coose pause")
+    if not yes:
+        typer.confirm(f"Undo everything in '{s.display_name}' after the start of round {round_number}?", abort=True)
+    sconn = stories.open_story_db(s)
+    try:
+        rounds.rollback(s.path, sconn, round_number)
+    except rounds.RoundError as e:
+        _fail(str(e))
+    finally:
+        sconn.close()
+    typer.echo(f"'{s.display_name}' is back at the start of round {round_number}.")
 
 
 @app.command("status")

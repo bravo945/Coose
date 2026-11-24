@@ -47,9 +47,14 @@ class Hub:
         with self._guard:
             return bool(self._conns.get((story, character_id)))
 
-    def online_users(self, story: str, character_id: int) -> list[str]:
+    def online_users(self, story: str) -> list[str]:
         with self._guard:
-            return sorted({c.username for c in self._conns.get((story, character_id), ())}, key=str.lower)
+            return sorted({c.username for (s, _), conns in self._conns.items() if s == story for c in conns},
+                          key=str.lower)
+
+    def online_characters(self, story: str) -> set[int]:
+        with self._guard:
+            return {cid for (s, cid), conns in self._conns.items() if s == story and conns}
 
     def notify(self, story: str, character_ids) -> None:
         """Tell these characters' open pages to refresh. Safe from any thread."""

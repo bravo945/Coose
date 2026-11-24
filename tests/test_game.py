@@ -71,21 +71,21 @@ def test_apply_action_updates_character_clock_and_memory(sconn, story):
     assert c.location == "The market"
     assert c.inventory == ["knife", "coin"]
     assert c.knowledge == ["Bread is scarce."]
-    assert c.needs == {"food": 90}
+    assert game.need_levels(sconn, c, settings) == {"food": "fine"}  # 90 of 600 minutes
     assert game.world_time(sconn, settings).isoformat() == "2035-03-01T07:30:00"
     assert game.working_memory(sconn) == ["A vendor saw Mara eat."]
     c = game.apply_action(sconn, c, game.ActionOutcome(narration="", minutes_elapsed=30, needs_met=["Food"]))
-    assert c.needs == {"food": 0}
+    assert c.needs == {"food": 120}  # met at the new clock minute
 
 
 def test_need_levels_are_words(sconn, story):
     settings = story.game_settings()
     c = make(sconn, story)
-    assert game.need_levels(c, settings) == {"food": "fine"}
+    assert game.need_levels(sconn, c, settings) == {"food": "fine"}
     c = game.apply_action(sconn, c, game.ActionOutcome(narration="", minutes_elapsed=8 * 60))
-    assert game.need_levels(c, settings) == {"food": "urgent"}
+    assert game.need_levels(sconn, c, settings) == {"food": "urgent"}
     c = game.apply_action(sconn, c, game.ActionOutcome(narration="", minutes_elapsed=3 * 60))
-    assert game.need_levels(c, settings) == {"food": "run out"}
+    assert game.need_levels(sconn, c, settings) == {"food": "run out"}
 
 
 def test_world_state_seeded_from_file(sconn, story_dir):
