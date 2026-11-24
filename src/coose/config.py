@@ -20,6 +20,7 @@ class Config:
     api_key_env: str
     model: str = "claude-opus-5-5"
     effort: str = "medium"
+    cache_ttl: str = "1h"
 
     @property
     def server_db_path(self) -> Path:
@@ -48,7 +49,15 @@ class Config:
             api_key_env=ai.get("api_key_env", "ANTHROPIC_API_KEY"),
             model=ai.get("model", "claude-opus-5-5"),
             effort=ai.get("effort", "medium"),
+            cache_ttl=_cache_ttl(ai.get("cache_ttl", "1h")),
         )
+
+
+def _cache_ttl(value) -> str:
+    value = str(value).strip().lower()
+    if value not in ("5m", "1h"):
+        raise ValueError(f'cache_ttl in coose.toml must be "5m" or "1h", not "{value}"')
+    return value
 
 
 def _resolve(base: Path, value: str) -> Path:

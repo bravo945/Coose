@@ -44,6 +44,10 @@ PROMPT_PREFIXES = (('""', "dialogue"), ("!", "action"), ("?", "question"))
 PASSWORD = "playtest-password"
 
 
+def money(value) -> str:
+    return "?" if value is None else f"${value:.2f}"
+
+
 class ScenarioError(ValueError):
     pass
 
@@ -115,7 +119,7 @@ def run(config: Config, story_name: str, scenario: Scenario, out: Path, keep: bo
             settings_path.write_text(yaml.safe_dump(current, sort_keys=False), encoding="utf-8")
         test_config = Config(host="127.0.0.1", port=0, data_dir=scratch / "data", stories_dir=scratch / "stories",
                              secret_key_env=config.secret_key_env, api_key_env=config.api_key_env,
-                             model=config.model, effort=config.effort)
+                             model=config.model, effort=config.effort, cache_ttl=config.cache_ttl)
         server = db.connect(test_config.server_db_path)
         for p in scenario.players:
             accounts.create_account(server, p.user, PASSWORD)
@@ -127,9 +131,10 @@ def run(config: Config, story_name: str, scenario: Scenario, out: Path, keep: bo
                     db.log_usage(c, source.name, r)
                 finally:
                     c.close()
-            narrator = ClaudeNarrator(config.model, config.effort, config.api_key_env, usage_log=record)
+            narrator = ClaudeNarrator(config.model, config.effort, config.api_key_env, usage_log=record,
+                                      cache_ttl=config.cache_ttl)
         app = create_app(test_config, secret_key="playtest", narrator=narrator)
-        transcript = Transcript(story.display_name, scenario)
+        transcript = Transcript(story.display_name, scenario, config.cache_ttl)
 
         with ExitStack() as stack:
             clients = {}
@@ -197,7 +202,8 @@ def _error_text(page: str) -> str | None:
 
 
 class Transcript:
-    def __init__(self, title: str, scenario: Scenario):
+    def __init__(self, title: str, scenario: Scenario, cache_ttl: str = "1h"):
+        self.cache_ttl = cache_ttl
         self.lines = [f"# Playtest: {title}", ""]
         self.lines += ["Players: " + ", ".join(
             f"{p.user} as {p.character.get('name')}{'' if p.online else ' (away)'}" for p in scenario.players), ""]
@@ -236,10 +242,14 @@ class Transcript:
         self.lines += ["", "### World State", "", game.world_state(sconn).strip(), ""]
         for entry in sorted((story_dir / rounds.LOGBOOK_DIR).glob("Round [0-9]*.md")):
             self.lines += [f"### Logbook: {entry.name}", "", entry.read_text(encoding="utf-8").strip(), ""]
-        self.lines += ["### AI usage", "", "| Pass | Calls | Input | Output | Cache read | Cache write | Avg s |",
-                       "|---|---|---|---|---|---|---|"]
+        self.lines += ["### AI usage", "",
+                       "| Pass | Calls | Input | Output | Cache read | Cache write | Avg s | Est. $ |",
+                       "|---|---|---|---|---|---|---|---|"]
         self.lines += [f"| {u['pass']} | {u['calls']} | {u['input']} | {u['output']} | {u['cache_read']} | "
-                       f"{u['cache_write']} | {u['avg_seconds']} |" for u in usage] or ["| (none) | | | | | | |"]
+                       f"{u['cache_write']} | {u['avg_seconds']} | {money(u['cost'])} |" for u in usage] \
+            or ["| (none) | | | | | | | |"]
+        total = sum(u["cost"] or 0 for u in usage)
+        self.lines += ["", f"Estimated total: {money(total)} (Premise cache kept for {self.cache_ttl})."]
 
     def render(self) -> str:
         return "\n".join(self.lines).rstrip() + "\n"

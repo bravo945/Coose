@@ -48,7 +48,8 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
         finally:
             c.close()
 
-    narrator = narrator or ClaudeNarrator(config.model, config.effort, config.api_key_env, usage_log=record_usage)
+    narrator = narrator or ClaudeNarrator(config.model, config.effort, config.api_key_env, usage_log=record_usage,
+                                           cache_ttl=config.cache_ttl)
     hub = app.state.hub = Hub()
     round_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)  # one round change at a time
 

@@ -9,6 +9,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from . import pricing
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
     username      TEXT PRIMARY KEY COLLATE NOCASE,
@@ -39,7 +41,8 @@ CREATE TABLE IF NOT EXISTS ai_usage (
     cache_read_tokens  INTEGER NOT NULL,
     cache_write_tokens INTEGER NOT NULL,
     seconds            REAL NOT NULL,
-    stop_reason        TEXT
+    stop_reason        TEXT,
+    cost_usd           REAL   -- estimated; NULL when the model has no known price
 );
 """
 
@@ -52,6 +55,9 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(ai_usage)")}
+    if "cost_usd" not in columns:  # databases from before cost estimates
+        conn.execute("ALTER TABLE ai_usage ADD COLUMN cost_usd REAL")
     return conn
 
 
@@ -70,13 +76,16 @@ def set_state(conn: sqlite3.Connection, key: str, value: str | None) -> None:
 
 
 def log_usage(conn: sqlite3.Connection, story: str | None, record: dict) -> None:
+    cost = pricing.estimate(record["model"], record["input_tokens"], record["output_tokens"],
+                            record["cache_read_tokens"], record["cache_write_tokens"],
+                            record.get("cache_ttl", "5m"))
     with conn:
         conn.execute(
             "INSERT INTO ai_usage (story, pass, model, input_tokens, output_tokens, cache_read_tokens, "
-            "cache_write_tokens, seconds, stop_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "cache_write_tokens, seconds, stop_reason, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (story, record["pass"], record["model"], record["input_tokens"], record["output_tokens"],
              record["cache_read_tokens"], record["cache_write_tokens"], record["seconds"],
-             record.get("stop_reason")),
+             record.get("stop_reason"), cost),
         )
 
 
@@ -92,7 +101,7 @@ def usage_summary(conn: sqlite3.Connection, story: str | None = None, since: str
     return conn.execute(
         "SELECT pass, COUNT(*) AS calls, SUM(input_tokens) AS input, SUM(output_tokens) AS output, "
         "SUM(cache_read_tokens) AS cache_read, SUM(cache_write_tokens) AS cache_write, "
-        "ROUND(AVG(seconds), 1) AS avg_seconds FROM ai_usage"
+        "ROUND(AVG(seconds), 1) AS avg_seconds, ROUND(SUM(cost_usd), 4) AS cost FROM ai_usage"
         + (" WHERE " + " AND ".join(where) if where else "")
         + " GROUP BY pass ORDER BY calls DESC",
         args,

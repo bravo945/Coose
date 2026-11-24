@@ -242,9 +242,10 @@ class ClaudeNarrator:
     """Runs the passes on the Claude API."""
 
     def __init__(self, model: str, effort: str, api_key_env: str,
-                 usage_log: Callable[[dict], None] | None = None):
+                 usage_log: Callable[[dict], None] | None = None, cache_ttl: str = "1h"):
         self.model = model
         self.effort = effort
+        self.cache_ttl = cache_ttl
         self.api_key_env = api_key_env
         self.usage_log = usage_log  # called with one record per API call, for `coose usage`
         self._client = None
@@ -260,7 +261,7 @@ class ClaudeNarrator:
     def _system(self, premise: PremiseText) -> list[dict]:
         return [
             {"type": "text", "text": CORE_RULES},
-            {"type": "text", "text": premise, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": premise, "cache_control": {"type": "ephemeral", "ttl": self.cache_ttl}},
         ]
 
     def _call(self, label: str, premise: PremiseText, prompt: str, output_format=None):
@@ -313,6 +314,7 @@ class ClaudeNarrator:
                 "cache_write_tokens": getattr(u, "cache_creation_input_tokens", None) or 0,
                 "seconds": round(seconds, 2),
                 "stop_reason": response.stop_reason,
+                "cache_ttl": self.cache_ttl,
             })
         except Exception:  # usage records must never break play
             pass

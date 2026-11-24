@@ -191,12 +191,15 @@ def usage(
     if not rows:
         typer.echo("No AI calls recorded yet.")
         return
-    typer.echo(f"{'pass':<10} {'calls':>6} {'input':>10} {'output':>10} {'cache read':>11} {'cache write':>12} {'avg s':>6}")
+    typer.echo(f"{'pass':<10} {'calls':>6} {'input':>10} {'output':>10} {'cache read':>11} {'cache write':>12} "
+               f"{'avg s':>6} {'est. $':>8}")
     for r in rows:
+        cost = "?" if r["cost"] is None else f"{r['cost']:.2f}"
         typer.echo(f"{r['pass']:<10} {r['calls']:>6} {r['input']:>10} {r['output']:>10} {r['cache_read']:>11} "
-                   f"{r['cache_write']:>12} {r['avg_seconds']:>6}")
+                   f"{r['cache_write']:>12} {r['avg_seconds']:>6} {cost:>8}")
+    typer.echo(f"Estimated total: ${sum(r['cost'] or 0 for r in rows):.2f}")
     typer.echo("Input counts tokens sent fresh; cache reads are the cached Premise and Rulebook, billed at a "
-               "fraction of the input price.")
+               "fraction of the input price. Dollar figures are estimates; the Claude Console has the real bill.")
 
 
 @app.command("playtest")
