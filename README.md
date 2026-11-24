@@ -11,7 +11,9 @@ This repository holds the Coose server. It is built in milestones. So far:
 
 - **Milestone 4:** time and rounds. Hidden needs run down with the world clock for every character. An Action longer than `skip_threshold_minutes` becomes a time skip: the character waits for the next round (Questions still work), everyone online is told, and the longest pending skip moves the clock at the round change. If nobody else is online, the skip happens at once. A round comes after `actions_per_round` Actions, or when every online player votes for it (`round_vote`). At each round change the AI rewrites the World State, trims its working memory, updates every character and sends each one a short in-character notice. The old World State and a summary go to `Logbook/Round N.md`, and the story database is snapshotted. Offline characters pass a skip as `offline_during_skips` says: the AI plays them, or they get a backstory when their player returns.
 
-Story admin commands, schedules and caps arrive in milestone 6, after a playtest in milestone 5.
+- **Milestone 5:** playtest tooling. `coose playtest` runs a scripted scene through the real server and AI on a scratch copy of a story and writes a transcript (see [docs/playtest.md](docs/playtest.md)). Every API call is recorded, and `coose usage` shows calls and tokens per pass.
+
+Story admin commands, schedules and caps arrive in milestone 6.
 
 ## Setup
 
@@ -44,6 +46,8 @@ Write the Premise, Rulebook and characters with any tools you like, then set `di
 coose account add mara        # prompts for a password; players can't sign up
 coose rounds my-story         # rounds the story can be rolled back to
 coose rollback my-story 3     # undo everything after the start of round 3 (pause the story first)
+coose usage                   # Claude API calls and tokens so far, per pass
+coose playtest my-story examples/playtest.yaml   # scripted scene with the real AI
 coose stories                 # lists story folders and any problems
 coose run my-story            # makes it the running story
 coose serve                   # starts the player site on host:port from coose.toml

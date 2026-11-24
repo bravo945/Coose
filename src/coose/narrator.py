@@ -17,10 +17,11 @@ system prompt; everything that changes per prompt comes after it.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Callable, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -236,10 +237,12 @@ class Narrator(Protocol):
 class ClaudeNarrator:
     """Runs the passes on the Claude API."""
 
-    def __init__(self, model: str, effort: str, api_key_env: str):
+    def __init__(self, model: str, effort: str, api_key_env: str,
+                 usage_log: Callable[[dict], None] | None = None):
         self.model = model
         self.effort = effort
         self.api_key_env = api_key_env
+        self.usage_log = usage_log  # called with one record per API call, for `coose usage`
         self._client = None
 
     def _client_or_error(self):
@@ -256,7 +259,7 @@ class ClaudeNarrator:
             {"type": "text", "text": premise, "cache_control": {"type": "ephemeral"}},
         ]
 
-    def _call(self, premise: PremiseText, prompt: str, output_format=None):
+    def _call(self, label: str, premise: PremiseText, prompt: str, output_format=None):
         import anthropic
 
         kwargs = dict(
@@ -268,6 +271,7 @@ class ClaudeNarrator:
             output_config={"effort": self.effort},
             messages=[{"role": "user", "content": prompt}],
         )
+        started = time.monotonic()
         try:
             client = self._client_or_error()
             if output_format is not None:
@@ -284,16 +288,36 @@ class ClaudeNarrator:
             raise NarratorError("the server couldn't reach the AI service") from None
         except TypeError as e:  # e.g. no credentials configured at all
             raise NarratorError(f"the AI client isn't configured ({e})") from None
+        self._log_usage(label, response, time.monotonic() - started)
         if response.stop_reason == "refusal":
             raise NarratorError("the narrator declined to continue with that")
         if response.stop_reason == "max_tokens":
             raise NarratorError("the narrator's reply ran too long")
         return response
 
+    def _log_usage(self, label: str, response, seconds: float) -> None:
+        if self.usage_log is None:
+            return
+        u = response.usage
+        try:
+            self.usage_log({
+                "pass": label,
+                "model": getattr(response, "model", None) or self.model,
+                "input_tokens": u.input_tokens or 0,
+                "output_tokens": u.output_tokens or 0,
+                "cache_read_tokens": getattr(u, "cache_read_input_tokens", None) or 0,
+                "cache_write_tokens": getattr(u, "cache_creation_input_tokens", None) or 0,
+                "seconds": round(seconds, 2),
+                "stop_reason": response.stop_reason,
+            })
+        except Exception:  # usage records must never break play
+            pass
+
     def action(self, premise: PremiseText, scene: Scene, text: str,
                existing: list[str] | None = None) -> AuthorResult:
         scene_text = scene.render()
         responder = self._call(
+            "responder",
             premise,
             f"{scene_text}\n\n# Action\n{scene.character.name} attempts:\n{text}\n\n"
             "You are the Responder. Check the action against the Rulebook, the mechanics in the Premise, "
@@ -304,6 +328,7 @@ class ClaudeNarrator:
         if responder is None:
             raise NarratorError("the narrator's reply couldn't be read")
         author = self._call(
+            "author",
             premise,
             f"{scene_text}\n\n# Action\n{scene.character.name} attempts:\n{text}\n\n"
             f"# Responder's judgement\nOutcome: {responder.outcome}\nReasoning: {responder.reasoning}\n"
@@ -322,6 +347,7 @@ class ClaudeNarrator:
 
     def question(self, premise: PremiseText, scene: Scene, text: str) -> str:
         response = self._call(
+            "question",
             premise,
             f"{scene.render()}\n\n# Question from {scene.character.name}'s player (out of character)\n{text}\n\n"
             "Answer only with what this character knows, has experienced in their chatroom, or would "
@@ -338,6 +364,7 @@ class ClaudeNarrator:
                   others: list[game.Character]) -> list[WitnessReport]:
         actor = scene.character
         response = self._call(
+            "witnesses",
             premise,
             f"{scene.render()}\n\n# Action\n{actor.name} attempted:\n{text}\n\n"
             f"# What objectively happened\nTime taken: {result.minutes_elapsed} minutes\n"
@@ -360,6 +387,7 @@ class ClaudeNarrator:
     def reply_as(self, premise: PremiseText, scene: Scene, speaker: str, text: str, mode: str) -> str:
         me = scene.character
         response = self._call(
+            "reply",
             premise,
             f"{scene.render()}\n\n# Someone speaks to {me.name}\n{speaker} says to {me.name}: \"{text}\"\n\n"
             f"{me.name}'s player is away, so you answer for {me.name}, in character and in their own voice, "
@@ -375,6 +403,7 @@ class ClaudeNarrator:
 
     def round_change(self, premise: PremiseText, context: str) -> RoundResult:
         result = self._call(
+            "round",
             premise,
             f"{context}\n\n"
             "You are closing this round and opening the next. Reconcile everything that happened into the "
@@ -390,6 +419,7 @@ class ClaudeNarrator:
 
     def backfill(self, premise: PremiseText, scene: Scene, minutes: int) -> BackfillResult:
         result = self._call(
+            "backfill",
             premise,
             f"{scene.render()}\n\n# Time away\n{scene.character.name}'s player was offline while "
             f"{format_minutes(minutes)} passed in a time skip. The character was left untouched. Now that "
