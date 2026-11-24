@@ -181,6 +181,45 @@ def status() -> None:
     typer.echo(f"Accounts: {len(accounts.list_accounts(_conn()))}")
 
 
+@app.command("usage")
+def usage(
+    story: Optional[str] = typer.Option(None, "--story", help="Only this story."),
+    since: Optional[str] = typer.Option(None, "--since", help="Only calls on or after this date, e.g. 2026-11-01."),
+) -> None:
+    """Show how many Claude API calls and tokens play has used, per pass."""
+    rows = db.usage_summary(_conn(), story, since)
+    if not rows:
+        typer.echo("No AI calls recorded yet.")
+        return
+    typer.echo(f"{'pass':<10} {'calls':>6} {'input':>10} {'output':>10} {'cache read':>11} {'cache write':>12} {'avg s':>6}")
+    for r in rows:
+        typer.echo(f"{r['pass']:<10} {r['calls']:>6} {r['input']:>10} {r['output']:>10} {r['cache_read']:>11} "
+                   f"{r['cache_write']:>12} {r['avg_seconds']:>6}")
+    typer.echo("Input counts tokens sent fresh; cache reads are the cached Premise and Rulebook, billed at a "
+               "fraction of the input price.")
+
+
+@app.command("playtest")
+def playtest(
+    story: str,
+    scenario: Path = typer.Argument(..., exists=True, dir_okay=False, help="Scenario YAML (see docs/playtest.md)."),
+    out: Path = typer.Option(Path("playtest.md"), "--out", "-o", help="Where to write the transcript."),
+    keep: bool = typer.Option(False, "--keep", help="Keep the scratch copy of the story to inspect."),
+) -> None:
+    """Run a scripted scenario through the real server and AI on a scratch copy of STORY."""
+    from . import playtest as pt
+
+    cfg = _cfg()
+    try:
+        plan = pt.Scenario.load(scenario)
+        scratch = pt.run(cfg, story, plan, out, keep=keep, log=typer.echo)
+    except (pt.ScenarioError, stories.StoryError) as e:
+        _fail(str(e))
+    typer.echo(f"Transcript written to {out}")
+    if keep:
+        typer.echo(f"Scratch copy kept at {scratch}")
+
+
 @app.command("serve")
 def serve() -> None:
     """Start the web server for players."""

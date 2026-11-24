@@ -1,0 +1,33 @@
+# Example playtest scenario. Works with any story; edit the characters and
+# locations to fit yours. Run it on the server machine (it uses your API key):
+#   coose playtest my-story examples/playtest.yaml --out playtest.md
+settings:
+  actions_per_round: 6        # overrides for this run only
+players:
+  - user: tester1
+    character:
+      name: Mara
+      description: A scavenger who trusts nobody and is good with locks.
+      location: The town gate
+      items: [crowbar, lighter]
+  - user: tester2
+    character:
+      name: Elias
+      description: A former soldier with a bad leg who trades medical help for food.
+      location: The town gate
+      items: [first aid kit]
+  - user: tester3
+    online: false               # nobody at the keyboard: the narrator answers for them
+    character:
+      name: Saul
+      description: An old trader who sells boiled water by the gate.
+      location: The town gate
+steps:
+  - tester1: "? What do I know about this place?"     # ? Question
+  - tester1: "! I look for whoever guards the gate."  # ! Action
+  - tester2: '"" You look frozen. Heading in too?'    # "" Dialogue to everyone here
+  - tester1: '"" Saul, how much for the water?'
+  - tester2: "! I walk to the next town. It takes most of the day."   # likely a time skip
+  - tester2: "! I keep walking."                      # should be refused until the round
+  - vote: [tester1, tester2]                          # everyone online agrees: round change
+  - tester1: "! I find somewhere out of the wind to sleep."

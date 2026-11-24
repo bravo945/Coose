@@ -41,7 +41,14 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
     )
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
-    narrator = narrator or ClaudeNarrator(config.model, config.effort, config.api_key_env)
+    def record_usage(record: dict) -> None:
+        c = conn()
+        try:
+            db.log_usage(c, stories.status(c).story, record)
+        finally:
+            c.close()
+
+    narrator = narrator or ClaudeNarrator(config.model, config.effort, config.api_key_env, usage_log=record_usage)
     hub = app.state.hub = Hub()
     round_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)  # one round change at a time
 
