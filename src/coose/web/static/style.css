@@ -1,0 +1,528 @@
+/* ==========================================================================
+   Waybar Gold: website stylesheet
+   A clean author stylesheet (no !important, no overrides) for building your
+   own pages in the same look: black canvas, gold accents, sharp edges, Verdana.
+   Layers: reset < tokens < base < layout < components < utilities
+   ========================================================================== */
+
+@layer reset, tokens, base, layout, components, utilities;
+
+/* --------------------------------------------------------------------------
+   Reset
+   -------------------------------------------------------------------------- */
+@layer reset {
+    *, *::before, *::after { box-sizing: border-box; }
+
+    * { margin: 0; }
+
+    html {
+        -webkit-text-size-adjust: 100%;
+                text-size-adjust: 100%;
+        tab-size: 4;
+    }
+
+    img, picture, video, canvas, svg { display: block; max-inline-size: 100%; block-size: auto; }
+    svg { block-size: revert-layer; }
+
+    input, button, textarea, select { font: inherit; color: inherit; }
+
+    p, h1, h2, h3, h4, h5, h6 { overflow-wrap: break-word; }
+
+    ul[role="list"], ol[role="list"] { list-style: none; padding: 0; }
+
+    button { cursor: pointer; }
+    [hidden] { display: none !important; }
+}
+
+/* --------------------------------------------------------------------------
+   Design tokens
+   -------------------------------------------------------------------------- */
+@layer tokens {
+    :root {
+        /* Palette (dark is the default identity) */
+        --gold: #db9639;
+        --gold-dim: rgba(198, 146, 77, 0.5);
+        --gold-faint: rgba(219, 150, 57, 0.15);
+        --canvas: #000;
+        --surface-1: #0f0f0f;
+        --surface-2: #181818;
+        --glass: rgba(0, 0, 0, 0.85);
+        --text: #fff;
+        --text-muted: #b5b5b5;
+        --on-gold: #000;
+        --green: #26a65b;
+        --red: #f53c3c;
+        --blue: #2980b9;
+
+        /* Type */
+        --font: Verdana, Geneva, "DejaVu Sans", "Bitstream Vera Sans", system-ui, sans-serif;
+        --font-mono: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace,
+                     "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+        --step--1: clamp(0.8rem, 0.78rem + 0.1vw, 0.875rem);
+        --step-0:  1rem;
+        --step-1:  clamp(1.15rem, 1.08rem + 0.35vw, 1.35rem);
+        --step-2:  clamp(1.4rem, 1.2rem + 1vw, 1.9rem);
+        --step-3:  clamp(1.75rem, 1.35rem + 2vw, 2.75rem);
+
+        /* Space */
+        --space-1: 0.25rem;
+        --space-2: 0.5rem;
+        --space-3: 0.75rem;
+        --space-4: 1rem;
+        --space-5: 1.5rem;
+        --space-6: 2.5rem;
+        --space-7: 4rem;
+
+        /* Shape */
+        --radius: 0;
+        --border: 1px solid var(--gold-dim);
+        --measure: 68ch;
+        --page-width: 72rem;
+        --bar-height: 3rem;
+        --ease: 0.15s ease;
+
+        color-scheme: dark;
+        accent-color: var(--gold);
+    }
+
+    /* Derived tints where supported */
+    @supports (color: color-mix(in srgb, red, blue)) {
+        :root {
+            --gold-dim:   color-mix(in srgb, var(--gold) 50%, transparent);
+            --gold-faint: color-mix(in srgb, var(--gold) 15%, transparent);
+        }
+    }
+
+    /* Optional light variant: only if the visitor asks for it and you haven't
+       pinned the theme. Pin dark with <html data-theme="dark">. */
+    @media (prefers-color-scheme: light) {
+        :root:not([data-theme="dark"]) {
+            --gold: #8a5a12;
+            --gold-dim: rgba(138, 90, 18, 0.45);
+            --gold-faint: rgba(138, 90, 18, 0.1);
+            --canvas: #fbf8f2;
+            --surface-1: #f2ede2;
+            --surface-2: #e9e2d2;
+            --glass: rgba(251, 248, 242, 0.88);
+            --text: #141414;
+            --text-muted: #55504a;
+            --on-gold: #fff;
+            color-scheme: light;
+        }
+    }
+    :root[data-theme="light"] {
+        --gold: #8a5a12;
+        --gold-dim: rgba(138, 90, 18, 0.45);
+        --gold-faint: rgba(138, 90, 18, 0.1);
+        --canvas: #fbf8f2;
+        --surface-1: #f2ede2;
+        --surface-2: #e9e2d2;
+        --glass: rgba(251, 248, 242, 0.88);
+        --text: #141414;
+        --text-muted: #55504a;
+        --on-gold: #fff;
+        color-scheme: light;
+    }
+
+    @media (prefers-contrast: more) {
+        :root { --gold-dim: var(--gold); --text-muted: var(--text); }
+    }
+}
+
+/* --------------------------------------------------------------------------
+   Base elements
+   -------------------------------------------------------------------------- */
+@layer base {
+    html {
+        font-size: clamp(100%, 0.9rem + 0.4vw, 120%);
+        scroll-padding-block-start: calc(var(--bar-height) + var(--space-4));
+        scrollbar-color: var(--gold-dim) var(--canvas);
+        scrollbar-width: thin;
+        caret-color: var(--gold);
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+        html { scroll-behavior: smooth; }
+    }
+
+    body {
+        min-block-size: 100dvh;
+        background: var(--canvas);
+        color: var(--text);
+        font-family: var(--font);
+        font-size: var(--step-0);
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        text-rendering: optimizeLegibility;
+        display: flex;
+        flex-direction: column;
+    }
+
+    ::selection { background: var(--gold); color: var(--on-gold); }
+
+    h1, h2, h3, h4, h5, h6 {
+        color: var(--gold);
+        line-height: 1.2;
+        font-weight: 700;
+        text-wrap: balance;
+    }
+    h1 { font-size: var(--step-3); }
+    h2 { font-size: var(--step-2); }
+    h3 { font-size: var(--step-1); }
+    h4, h5, h6 { font-size: var(--step-0); }
+
+    p, li, dd, blockquote { text-wrap: pretty; }
+
+    small { font-size: var(--step--1); color: var(--text-muted); }
+    strong, b { font-weight: 700; }
+
+    /* Rhythm: a flow of space between siblings inside prose */
+    :where(.flow > * + *) { margin-block-start: var(--flow-space, var(--space-4)); }
+    :where(.flow > h2, .flow > h3) { --flow-space: var(--space-6); }
+
+    /* Links */
+    a {
+        color: var(--gold);
+        text-decoration-color: var(--gold-dim);
+        text-decoration-thickness: 1px;
+        text-underline-offset: 0.2em;
+        transition: background-color var(--ease), color var(--ease);
+    }
+    @media (hover: hover) {
+        a:hover { background: var(--gold); color: var(--on-gold); text-decoration-color: transparent; }
+        a:has(> img):hover, a:has(> svg):hover { background: transparent; }
+    }
+
+    /* Focus: visible for keyboard users */
+    :focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+    hr { border: 0; border-block-start: var(--border); margin-block: var(--space-6); }
+
+    ul, ol { padding-inline-start: 1.4em; }
+    li::marker { color: var(--gold); }
+    li + li { margin-block-start: var(--space-1); }
+
+    mark { background: var(--gold); color: var(--on-gold); padding-inline: 0.25em; }
+
+    blockquote {
+        padding-inline-start: var(--space-4);
+        border-inline-start: 3px solid var(--gold);
+        color: var(--text-muted);
+    }
+
+    /* Code */
+    code, kbd, samp, pre { font-family: var(--font-mono); font-size: 0.92em; font-variant-ligatures: contextual; }
+    :not(pre) > code, kbd {
+        background: var(--surface-2);
+        border: var(--border);
+        padding: 0.1em 0.4em;
+    }
+    kbd { border-block-end-width: 3px; }
+    pre {
+        background: var(--surface-1);
+        border: var(--border);
+        padding: var(--space-4);
+        overflow-x: auto;
+        line-height: 1.5;
+        tab-size: 4;
+    }
+
+    /* Tables scroll inside their own wrapper; put <div class="table-wrap"> around */
+    table { border-collapse: collapse; inline-size: 100%; }
+    th, td { padding: var(--space-2) var(--space-3); border: var(--border); text-align: start; }
+    th { color: var(--gold); background: var(--surface-2); }
+    tbody tr:nth-child(even) { background: var(--surface-1); }
+
+    details { border: var(--border); background: var(--surface-1); }
+    summary { padding: var(--space-3) var(--space-4); color: var(--gold); cursor: pointer; }
+    details[open] > summary { border-block-end: var(--border); }
+    details > :not(summary) { padding: var(--space-4); }
+
+    dialog {
+        background: var(--surface-1);
+        color: var(--text);
+        border: var(--border);
+        padding: var(--space-5);
+        max-inline-size: min(36rem, 92vw);
+    }
+    dialog::backdrop { background: rgba(0, 0, 0, 0.7); }
+
+    progress, meter { accent-color: var(--gold); inline-size: 100%; }
+
+    /* Forms */
+    label { display: block; color: var(--gold); font-size: var(--step--1); margin-block-end: var(--space-1); }
+
+    input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"],
+              [type="submit"], [type="button"], [type="reset"], [type="file"]),
+    textarea, select {
+        inline-size: 100%;
+        background: var(--surface-2);
+        color: var(--text);
+        border: var(--border);
+        border-radius: var(--radius);
+        padding: var(--space-2) var(--space-3);
+        transition: border-color var(--ease);
+    }
+    textarea { min-block-size: 8em; resize: vertical; }
+    input::placeholder, textarea::placeholder { color: var(--text-muted); opacity: 1; }
+    input:focus, textarea:focus, select:focus { border-color: var(--gold); }
+    input:user-invalid, textarea:user-invalid { border-color: var(--red); }
+    input:disabled, textarea:disabled, select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    input[type="file"]::file-selector-button {
+        background: transparent; color: var(--gold); border: var(--border);
+        padding: var(--space-1) var(--space-3); margin-inline-end: var(--space-3); cursor: pointer;
+    }
+}
+
+/* --------------------------------------------------------------------------
+   Layout
+   -------------------------------------------------------------------------- */
+@layer layout {
+    .skip-link {
+        position: absolute;
+        inset-inline-start: var(--space-3);
+        inset-block-start: -10rem;
+        background: var(--gold);
+        color: var(--on-gold);
+        padding: var(--space-2) var(--space-4);
+        z-index: 100;
+    }
+    .skip-link:focus { inset-block-start: var(--space-3); }
+
+    main { flex: 1 0 auto; }
+
+    .container {
+        inline-size: min(100% - 2 * var(--space-4), var(--page-width));
+        margin-inline: auto;
+    }
+    .container-narrow { --page-width: 46rem; }
+
+    .section { padding-block: var(--space-7); }
+    .section + .section { border-block-start: var(--border); }
+
+    /* Responsive grid with no media queries */
+    .grid {
+        display: grid;
+        gap: var(--space-4);
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+    }
+
+    .stack { display: flex; flex-direction: column; gap: var(--space-4); }
+    .cluster { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
+
+    .sidebar-layout { display: grid; gap: var(--space-5); }
+    @media (min-width: 52em) {
+        .sidebar-layout { grid-template-columns: 16rem minmax(0, 1fr); align-items: start; }
+        .sidebar-layout > aside { position: sticky; inset-block-start: calc(var(--bar-height) + var(--space-4)); }
+    }
+
+    .prose { max-inline-size: var(--measure); }
+}
+
+/* --------------------------------------------------------------------------
+   Components
+   -------------------------------------------------------------------------- */
+@layer components {
+
+    /* ---- The bar (header/nav styled like Waybar) ---- */
+    .bar {
+        position: sticky;
+        inset-block-start: 0;
+        z-index: 50;
+        min-block-size: var(--bar-height);
+        padding-block-start: env(safe-area-inset-top, 0);
+        padding-inline: max(var(--space-4), env(safe-area-inset-left, 0)) max(var(--space-4), env(safe-area-inset-right, 0));
+        background: var(--glass);
+        border-block-end: 2px solid var(--gold-dim);
+        display: flex;
+        align-items: center;
+        gap: var(--space-4);
+        flex-wrap: wrap;
+    }
+    @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+        .bar { -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+    }
+    .bar__brand { color: var(--gold); font-weight: 700; text-decoration: none; padding-inline: var(--space-2); }
+    .bar__nav { display: flex; flex-wrap: wrap; margin-inline-start: auto; }
+
+    /* Workspace-style nav items */
+    .bar__nav a, .tab {
+        display: inline-flex;
+        align-items: center;
+        min-block-size: 2.5rem;
+        padding-inline: var(--space-3);
+        color: var(--gold);
+        text-decoration: none;
+        border: 1px solid transparent;
+    }
+    .bar__nav a[aria-current="page"], .tab[aria-selected="true"],
+    .tab[aria-pressed="true"] {
+        background: var(--gold);
+        color: var(--on-gold);
+        box-shadow: inset 0 -3px var(--on-gold);
+    }
+    @media (hover: hover) {
+        .bar__nav a:hover, .tab:hover {
+            background: var(--gold); color: var(--on-gold);
+            box-shadow: inset 0 -3px var(--on-gold);
+        }
+    }
+
+    /* Status "modules" (little blocks like clock, cpu, battery) */
+    .module {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: var(--space-1) var(--space-3);
+        background: var(--surface-2);
+        border: var(--border);
+        font-size: var(--step--1);
+    }
+    .module--ok   { color: var(--green); border-color: var(--green); }
+    .module--warn { color: var(--gold); }
+    .module--bad  { color: var(--red); border-color: var(--red); }
+    .module--info { color: var(--blue); border-color: var(--blue); }
+
+    /* ---- Buttons ---- */
+    .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--space-2);
+        min-block-size: 2.5rem;
+        padding: var(--space-2) var(--space-4);
+        background: transparent;
+        color: var(--gold);
+        border: var(--border);
+        border-radius: var(--radius);
+        text-decoration: none;
+        line-height: 1.2;
+        transition: background-color var(--ease), color var(--ease);
+    }
+    @media (hover: hover) {
+        .btn:hover { background: var(--gold); color: var(--on-gold); box-shadow: inset 0 -3px var(--on-gold); }
+    }
+    .btn:active { background: var(--gold); color: var(--on-gold); }
+    .btn--solid { background: var(--gold); color: var(--on-gold); border-color: var(--gold); }
+    @media (hover: hover) {
+        .btn--solid:hover { background: transparent; color: var(--gold); box-shadow: none; }
+    }
+    .btn--danger { color: var(--red); border-color: var(--red); }
+    @media (hover: hover) {
+        .btn--danger:hover { background: var(--red); color: var(--on-gold); box-shadow: none; }
+    }
+    .btn:disabled, .btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
+
+    /* ---- Cards (container-query aware) ---- */
+    .card-wrap { container-type: inline-size; }
+    .card {
+        background: var(--surface-1);
+        border: var(--border);
+        padding: var(--space-5);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-3);
+    }
+    .card__title { font-size: var(--step-1); }
+    .card--accent { border-block-start: 3px solid var(--gold); }
+
+    @container (min-width: 28rem) {
+        .card--split { flex-direction: row; align-items: flex-start; }
+        .card--split > :first-child { flex: 0 0 8rem; }
+    }
+
+    /* ---- Badges ---- */
+    .badge {
+        display: inline-block;
+        padding: 0 var(--space-2);
+        font-size: var(--step--1);
+        border: 1px solid currentColor;
+        color: var(--gold);
+        line-height: 1.6;
+    }
+    .badge--ok { color: var(--green); }
+    .badge--bad { color: var(--red); }
+    .badge--info { color: var(--blue); }
+
+    /* ---- Alerts ---- */
+    .alert {
+        padding: var(--space-3) var(--space-4);
+        background: var(--surface-1);
+        border: var(--border);
+        border-inline-start: 4px solid var(--gold);
+    }
+    .alert--ok   { border-inline-start-color: var(--green); }
+    .alert--bad  { border-inline-start-color: var(--red); }
+    .alert--info { border-inline-start-color: var(--blue); }
+
+    /* ---- Hero ---- */
+    .hero { padding-block: clamp(var(--space-6), 12vw, 8rem); }
+    .hero h1 { max-inline-size: 20ch; }
+    .hero p { color: var(--text-muted); font-size: var(--step-1); max-inline-size: 48ch; }
+
+    /* ---- Footer ---- */
+    .footer {
+        border-block-start: 2px solid var(--gold-dim);
+        padding-block: var(--space-5) calc(var(--space-5) + env(safe-area-inset-bottom, 0));
+        color: var(--text-muted);
+        font-size: var(--step--1);
+    }
+
+    /* ---- Touch targets ---- */
+    @media (pointer: coarse) {
+        .btn, .bar__nav a, .tab { min-block-size: 44px; }
+    }
+}
+
+/* --------------------------------------------------------------------------
+   Utilities
+   -------------------------------------------------------------------------- */
+@layer utilities {
+    .visually-hidden {
+        position: absolute !important;
+        inline-size: 1px; block-size: 1px;
+        overflow: hidden; clip-path: inset(50%);
+        white-space: nowrap;
+    }
+    .text-gold  { color: var(--gold); }
+    .text-muted { color: var(--text-muted); }
+    .text-center { text-align: center; }
+    .mono { font-family: var(--font-mono); }
+    .mt-0 { margin-block-start: 0; }
+    .mt-4 { margin-block-start: var(--space-4); }
+    .mt-6 { margin-block-start: var(--space-6); }
+    .table-wrap { overflow-x: auto; }
+}
+
+/* --------------------------------------------------------------------------
+   User-preference media
+   -------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+    :root { --glass: var(--canvas); }
+    .bar { -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+
+@media (forced-colors: active) {
+    .btn, .module, .card, .alert, .badge { border: 1px solid CanvasText; }
+    .bar__nav a[aria-current="page"], .tab[aria-selected="true"] {
+        outline: 2px solid Highlight;
+    }
+}
+
+@media print {
+    :root { --canvas: #fff; --surface-1: #fff; --surface-2: #fff; --text: #000; --gold: #000; --gold-dim: #888; }
+    .bar, .skip-link, dialog { display: none; }
+    a { color: #000; }
+    a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.8em; }
+}

@@ -1,0 +1,26 @@
+# Story settings. Values marked "later" are read by the server from later milestones.
+
+display_name: "My Story"        # shown to players
+
+# Accounts that administer this story (later)
+admins: []
+
+# Time and rounds (later)
+start_time: "2035-01-01 08:00"  # where the world clock starts
+actions_per_round: 5
+round_vote: true                # online players may vote for a round change
+skip_threshold_minutes: 10      # Actions longer than this become a time skip
+
+# Characters (later)
+players_can_create: true
+ai_characters_public: true
+max_players: 9
+players_per_character: 3
+collectives: true
+absent_characters: speak_only   # speak_only | act_within_reason | freeze
+offline_during_skips: ai_plays  # ai_plays | backfill_on_return
+
+# Hidden needs, as hours of in-game time before each runs out (later)
+tracked_needs: {}
+#  food: 72
+#  water: 24
