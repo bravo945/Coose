@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Coose{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="bar">
+        <a class="bar__brand" href="/">Coose</a>
+        {% if user %}
+        <div class="cluster">
+            {% if server.online %}
+            <span class="module module--ok">Story online</span>
+            {% else %}
+            <span class="module module--bad">Story offline</span>
+            {% endif %}
+        </div>
+        <nav class="bar__nav cluster" aria-label="Account">
+            <span class="text-muted">{{ user }}</span>
+            <form method="post" action="/logout">
+                <button class="btn" type="submit">Log out</button>
+            </form>
+        </nav>
+        {% endif %}
+    </header>
+    <main id="main" class="container section">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

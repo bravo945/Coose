@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Log in · Coose{% endblock %}
+{% block content %}
+<div class="container-narrow container">
+    <form class="card card--accent stack" method="post" action="/login">
+        <h1 class="card__title">Log in</h1>
+        {% if error %}
+        <p class="alert alert--bad" role="alert">{{ error }}</p>
+        {% endif %}
+        <div>
+            <label for="username">Username</label>
+            <input id="username" name="username" autocomplete="username" required value="{{ username or '' }}" autofocus>
+        </div>
+        <div>
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <button class="btn btn--solid" type="submit">Log in</button>
+        <small>Accounts are created by the server's host. Ask them if you need one.</small>
+    </form>
+</div>
+{% endblock %}
