@@ -3,8 +3,10 @@
 An Action takes two passes. The Responder judges whether and how the action
 can happen (Rulebook, Premise mechanics, the character's capability). The
 Author then decides the objective consequences and writes the narration the
-acting player sees. A Question takes one pass, answered only from what the
-character could know.
+acting player sees. When other characters exist, a third pass judges who
+witnessed the Action and what each of them perceived. A Question takes one
+pass, answered only from what the character could know. When someone speaks
+to a character nobody is playing right now, one pass answers in their voice.
 
 The story's Premise and Rulebook go first in every request as a cached
 system prompt; everything that changes per prompt comes after it.
@@ -53,6 +55,12 @@ class ResponderDraft(BaseModel):
     draft: str = Field(description="An objective account of what actually happens.")
 
 
+class NewCharacter(BaseModel):
+    name: str = Field(description="Their name as people in the world would say it.")
+    description: str = Field(description="Who they are: appearance, role, manner. A few sentences.")
+    location: str = Field(description="Where they are now.")
+
+
 class AuthorResult(BaseModel):
     narration: str = Field(
         description="What the acting character perceives, second person, present tense. Only what they could notice."
@@ -68,6 +76,26 @@ class AuthorResult(BaseModel):
     memory_add: list[str] = Field(
         description="Short objective notes for the narrator's working memory: witnesses, changes to the "
         "world, details to keep consistent this round."
+    )
+    new_characters: list[NewCharacter] = Field(
+        description="Named people this action brings into the story who are likely to matter again, so they "
+        "can be spoken to and played. Leave empty for unnamed passers-by and for anyone listed under "
+        "existing characters."
+    )
+
+
+class WitnessReport(BaseModel):
+    name: str = Field(description="The witness's name, exactly as listed.")
+    narration: str = Field(
+        description="What this witness perceives, second person, present tense, only through their own senses."
+    )
+    learned: list[str] = Field(description="New facts the witness now knows, each a short sentence.")
+
+
+class WitnessPass(BaseModel):
+    reports: list[WitnessReport] = Field(
+        description="One report for each listed character who would realistically notice any part of the "
+        "action. Empty if nobody would."
     )
 
 
@@ -131,10 +159,32 @@ class NarratorError(RuntimeError):
     """The AI couldn't produce a result. Nothing was applied."""
 
 
+def describe_others(others: list[game.Character]) -> str:
+    lines = []
+    for o in others:
+        words = o.description.split()
+        short = " ".join(words[:60]) + (" ..." if len(words) > 60 else "")
+        lines.append(f"- {o.name} | location: {o.location or 'unspecified'} | condition: {o.condition} | {short}")
+    return "\n".join(lines) or "(none)"
+
+
+ABSENT_INSTRUCTIONS = {
+    "speak_only": "Reply only with words they say aloud. They take no actions while their player is away.",
+    "act_within_reason": "Reply with what they say aloud. You may add a small, harmless gesture or movement in "
+    "brackets if it is natural, but nothing that commits them to anything their player would need to decide.",
+}
+
+
 class Narrator(Protocol):
-    def action(self, premise: PremiseText, scene: Scene, text: str) -> AuthorResult: ...
+    def action(self, premise: PremiseText, scene: Scene, text: str,
+               existing: list[str] | None = None) -> AuthorResult: ...
 
     def question(self, premise: PremiseText, scene: Scene, text: str) -> str: ...
+
+    def witnesses(self, premise: PremiseText, scene: Scene, text: str, result: AuthorResult,
+                  others: list[game.Character]) -> list[WitnessReport]: ...
+
+    def reply_as(self, premise: PremiseText, scene: Scene, speaker: str, text: str, mode: str) -> str: ...
 
 
 class ClaudeNarrator:
@@ -194,7 +244,8 @@ class ClaudeNarrator:
             raise NarratorError("the narrator's reply ran too long")
         return response
 
-    def action(self, premise: PremiseText, scene: Scene, text: str) -> AuthorResult:
+    def action(self, premise: PremiseText, scene: Scene, text: str,
+               existing: list[str] | None = None) -> AuthorResult:
         scene_text = scene.render()
         responder = self._call(
             premise,
@@ -214,7 +265,9 @@ class ClaudeNarrator:
             "You are the Author. Decide the objective consequences of this action and write the narration "
             "the acting character's player will read. The narration must contain only what this character "
             "perceives. Record what changed for the character, how much in-game time passed, and objective "
-            "notes for the working memory (including anyone who would have noticed).",
+            "notes for the working memory (including anyone who would have noticed).\n\n"
+            "# Existing characters (never add these as new characters)\n"
+            + ("\n".join(f"- {n}" for n in existing or []) or "(none)"),
             output_format=AuthorResult,
         ).parsed_output
         if author is None:
@@ -234,3 +287,42 @@ class ClaudeNarrator:
         if not answer:
             raise NarratorError("the narrator gave an empty answer")
         return answer
+
+    def witnesses(self, premise: PremiseText, scene: Scene, text: str, result: AuthorResult,
+                  others: list[game.Character]) -> list[WitnessReport]:
+        actor = scene.character
+        response = self._call(
+            premise,
+            f"{scene.render()}\n\n# Action\n{actor.name} attempted:\n{text}\n\n"
+            f"# What objectively happened\nTime taken: {result.minutes_elapsed} minutes\n"
+            f"{actor.name}'s location afterwards: {result.location or actor.location or 'unspecified'}\n"
+            "Notes: " + ("; ".join(result.memory_add) or "(none)") + "\n"
+            f"What {actor.name} perceived: {result.narration}\n\n"
+            f"# Other characters in the world\n{describe_others(others)}\n\n"
+            "You are judging witnesses. Decide which of the other characters would realistically notice any "
+            "part of this action right now, by sight, sound or other senses, given where they are. Being "
+            "somewhere else usually means they notice nothing. For each witness, write what they perceive "
+            "from their own point of view and what they now know. Witnesses see behaviour, not thoughts: "
+            f"never reveal {actor.name}'s intentions, the wording of the attempt, or anything the witness "
+            "couldn't perceive. If they don't know who someone is, describe them instead of naming them.",
+            output_format=WitnessPass,
+        ).parsed_output
+        if response is None:
+            raise NarratorError("the narrator's reply couldn't be read")
+        return response.reports
+
+    def reply_as(self, premise: PremiseText, scene: Scene, speaker: str, text: str, mode: str) -> str:
+        me = scene.character
+        response = self._call(
+            premise,
+            f"{scene.render()}\n\n# Someone speaks to {me.name}\n{speaker} says to {me.name}: \"{text}\"\n\n"
+            f"{me.name}'s player is away, so you answer for {me.name}, in character and in their own voice, "
+            "consistent with their description, what they know and their recent chatroom. "
+            f"{ABSENT_INSTRUCTIONS.get(mode, ABSENT_INSTRUCTIONS['speak_only'])} Keep it short, like a real "
+            "reply in conversation. Write only the reply itself, with no quotation marks around it and no "
+            "narration.",
+        )
+        reply = "".join(b.text for b in response.content if b.type == "text").strip().strip('"').strip()
+        if not reply:
+            raise NarratorError("the narrator gave an empty reply")
+        return reply

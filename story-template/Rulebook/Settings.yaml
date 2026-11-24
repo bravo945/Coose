@@ -11,14 +11,14 @@ actions_per_round: 5
 round_vote: true                # online players may vote for a round change
 skip_threshold_minutes: 10      # Actions longer than this become a time skip
 
-# Characters (later)
+# Characters
 players_can_create: true
-ai_characters_public: true
-max_players: 9
+ai_characters_public: true      # characters the narrator introduces can be played by anyone
+max_players: 9                  # (later)
 players_per_character: 3
-collectives: true
-absent_characters: speak_only   # speak_only | act_within_reason | freeze
-offline_during_skips: ai_plays  # ai_plays | backfill_on_return
+collectives: true               # (later)
+absent_characters: speak_only   # when a player is away: speak_only | act_within_reason | freeze
+offline_during_skips: ai_plays  # ai_plays | backfill_on_return (later)
 
 # Hidden needs, as hours of in-game time before each runs out (later)
 tracked_needs: {}

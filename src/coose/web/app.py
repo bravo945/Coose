@@ -6,7 +6,9 @@ import secrets
 from contextlib import contextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Request
+import logging
+
+from fastapi import BackgroundTasks, FastAPI, Form, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -14,7 +16,10 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .. import accounts, db, game, stories
 from ..config import Config
-from ..narrator import ClaudeNarrator, Narrator, NarratorError, Scene, load_premise
+from ..narrator import AuthorResult, ClaudeNarrator, Narrator, NarratorError, Scene, load_premise
+from .live import Hub
+
+log = logging.getLogger(__name__)
 
 HERE = Path(__file__).parent
 SESSION_MAX_AGE = 60 * 60 * 24 * 14  # two weeks
@@ -34,6 +39,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
     narrator = narrator or ClaudeNarrator(config.model, config.effort, config.api_key_env)
+    hub = app.state.hub = Hub()
 
     def conn():
         return db.connect(config.server_db_path)
@@ -69,6 +75,25 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
 
     def to(path: str):
         return RedirectResponse(path, status_code=303)
+
+    def nearby(story_name: str, sconn, character: game.Character) -> list[dict]:
+        """Who is at the same location, and whether a player is there to answer."""
+        return [
+            {"id": c.id, "name": c.name, "online": hub.active(story_name, c.id)}
+            for c in game.characters_here(sconn, character)
+        ]
+
+    def make_scene(sconn, story, character: game.Character) -> Scene:
+        settings = story.game_settings()
+        return Scene(
+            story=story.display_name,
+            world_time=game.world_time(sconn, settings),
+            world_state=game.world_state(sconn),
+            working_memory=game.working_memory(sconn),
+            character=character,
+            need_levels=game.need_levels(character, settings),
+            recent=game.recent_messages(sconn, character.id, limit=30),
+        )
 
     # --- Login ------------------------------------------------------------
 
@@ -122,6 +147,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
                 character=character,
                 view=view,
                 messages=game.recent_messages(sconn, character.id),
+                nearby=nearby(story.name, sconn, character),
                 world_time=game.world_time(sconn, settings),
                 rules=rules_file.read_text(encoding="utf-8") if rules_file.exists() else "",
                 manual=manual_file.read_text(encoding="utf-8") if manual_file.exists() else "",
@@ -163,6 +189,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             except game.GameError as e:
                 request.session["error"] = str(e)
                 return to("/characters")
+            hub.notify_story(story.name)
         return to("/")
 
     @app.post("/leave")
@@ -173,6 +200,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
         with running_story() as (story, sconn):
             if story is not None:
                 game.leave(sconn, user)
+                hub.notify_story(story.name)
         return to("/characters")
 
     @app.get("/characters/new", response_class=HTMLResponse)
@@ -223,7 +251,13 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
         return to("/")
 
     @app.post("/prompt")
-    def prompt(request: Request, kind: str = Form("action"), text: str = Form("")):
+    def prompt(
+        request: Request,
+        background: BackgroundTasks,
+        kind: str = Form("action"),
+        text: str = Form(""),
+        recipient: list[int] = Form([]),
+    ):
         user = current_user(request)
         if not user:
             return to("/login")
@@ -238,46 +272,184 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
                 request.session["error"] = f"{character.name} is dead. Leave and choose another character."
                 return to("/")
             if kind not in game.PLAYER_KINDS:
-                request.session["error"] = "That prompt type isn't available yet."
+                request.session["error"] = "That prompt type isn't available."
                 return to("/")
             if not text:
                 return to("/")
             if len(text) > MAX_PROMPT_CHARS:
                 request.session["error"] = f"Prompts can be at most {MAX_PROMPT_CHARS} characters."
                 return to("/")
-            settings = story.game_settings()
             lock = game.character_lock(story.name, character.id)
             if not lock.acquire(blocking=False):
-                request.session["error"] = f"{character.name} is still busy with the last action."
+                request.session["error"] = f"{character.name} is still busy with the last prompt."
                 return to("/")
             try:
                 character = game.get_character(sconn, character.id)  # fresh, under the lock
-                scene = Scene(
-                    story=story.display_name,
-                    world_time=game.world_time(sconn, settings),
-                    world_state=game.world_state(sconn),
-                    working_memory=game.working_memory(sconn),
-                    character=character,
-                    need_levels=game.need_levels(character, settings),
-                    recent=game.recent_messages(sconn, character.id, limit=30),
-                )
-                game.add_message(sconn, character.id, kind, text, username=user)
                 premise = load_premise(story.path)
-                try:
-                    if kind == "question":
-                        answer = narrator.question(premise, scene, text)
-                        game.add_message(sconn, character.id, "answer", answer)
-                    else:
-                        result = narrator.action(premise, scene, text)
-                        game.apply_action(sconn, character, game.ActionOutcome(**result.model_dump()))
-                        game.add_message(sconn, character.id, "narration", result.narration)
-                except NarratorError as e:
-                    game.add_message(
-                        sconn, character.id, "system",
-                        f"The narrator couldn't respond: {e}. Nothing changed; you can try again.",
-                    )
+                if kind == "dialogue":
+                    error = run_dialogue(story, sconn, character, user, text, recipient, premise)
+                    if error:
+                        request.session["error"] = error
+                elif kind == "question":
+                    run_question(story, sconn, character, user, text, premise)
+                else:
+                    run_action(story, sconn, character, user, text, premise, background)
             finally:
                 lock.release()
         return to("/#latest")
 
+    def run_question(story, sconn, character, user, text, premise) -> None:
+        scene = make_scene(sconn, story, character)
+        game.add_message(sconn, character.id, "question", text, username=user)
+        hub.notify(story.name, [character.id])
+        try:
+            answer = narrator.question(premise, scene, text)
+            game.add_message(sconn, character.id, "answer", answer)
+        except NarratorError as e:
+            game.add_message(sconn, character.id, "system", narrator_failed(e))
+        hub.notify(story.name, [character.id])
+
+    def run_action(story, sconn, character, user, text, premise, background: BackgroundTasks) -> None:
+        settings = story.game_settings()
+        scene = make_scene(sconn, story, character)
+        game.add_message(sconn, character.id, "action", text, username=user)
+        hub.notify(story.name, [character.id])
+        others = game.other_characters(sconn, character.id)
+        try:
+            result = narrator.action(premise, scene, text, existing=[character.name] + [o.name for o in others])
+        except NarratorError as e:
+            game.add_message(sconn, character.id, "system", narrator_failed(e))
+            hub.notify(story.name, [character.id])
+            return
+        game.apply_action(sconn, character, game.ActionOutcome(**result.model_dump(exclude={"new_characters"})))
+        game.add_message(sconn, character.id, "narration", result.narration)
+        for new in result.new_characters:
+            game.create_ai_character(sconn, settings, name=new.name, description=new.description,
+                                     location=new.location)
+        hub.notify(story.name, [character.id])
+        if others:
+            # Runs after the acting player gets their page back, so they don't wait on it.
+            background.add_task(judge_witnesses, story.name, scene, text, result, [o.id for o in others], premise)
+
+    def judge_witnesses(story_name: str, scene: Scene, text: str, result: AuthorResult,
+                        candidate_ids: list[int], premise: str) -> None:
+        story = stories.find_story(config.stories_dir, story_name)
+        sconn = stories.open_story_db(story)
+        try:
+            candidates = [c for c in (game.get_character(sconn, i) for i in candidate_ids) if c and c.alive]
+            if not candidates:
+                return
+            try:
+                reports = narrator.witnesses(premise, scene, text, result, candidates)
+            except NarratorError as e:
+                log.warning("Witness pass for %s failed: %s", scene.character.name, e)
+                return
+            by_name = {c.name.lower(): c for c in candidates}
+            seen = []
+            for report in reports:
+                witness = by_name.get(report.name.strip().lower())
+                if witness is None or witness.id in seen or not report.narration.strip():
+                    continue
+                seen.append(witness.id)
+                game.add_message(sconn, witness.id, "witness", report.narration)
+                game.add_knowledge(sconn, witness.id, report.learned)
+            hub.notify(story_name, seen)
+        finally:
+            sconn.close()
+
+    def run_dialogue(story, sconn, speaker, user, text, recipient_ids, premise) -> str | None:
+        """Speak to characters at the same place. Returns an error for the player, if any."""
+        here = {c.id: c for c in game.characters_here(sconn, speaker)}
+        if not here:
+            return f"There's nobody here for {speaker.name} to talk to."
+        targets = [here[i] for i in dict.fromkeys(recipient_ids) if i in here] or list(here.values())
+        names = join_names([t.name for t in targets])
+        game.add_message(sconn, speaker.id, "dialogue", f'To {names}: "{text}"', username=user)
+        for t in targets:
+            also = [o.name for o in targets if o.id != t.id]
+            to_whom = f"you and {join_names(also)}" if also else "you"
+            game.add_message(sconn, t.id, "heard", f'{speaker.name} says to {to_whom}: "{text}"')
+        game.add_memory(sconn, [f'{speaker.name} said to {names}: "{text[:300]}"'])
+        hub.notify(story.name, [speaker.id] + [t.id for t in targets])
+
+        mode = story.game_settings().absent_characters
+        for t in targets:
+            if hub.active(story.name, t.id):
+                continue  # their player is here to answer
+            ai_character = t.owner is None
+            if mode == "freeze" and not ai_character:
+                game.add_message(sconn, speaker.id, "narration", f"{t.name} seems distracted and doesn't answer.")
+                continue
+            try:
+                reply = narrator.reply_as(premise, make_scene(sconn, story, t), speaker.name, text,
+                                          "act_within_reason" if ai_character else mode)
+            except NarratorError as e:
+                game.add_message(sconn, speaker.id, "system", f"{t.name} didn't answer: {narrator_failed(e)}")
+                continue
+            game.add_message(sconn, speaker.id, "heard", f'{t.name} says: "{reply}"')
+            for o in targets:
+                if o.id != t.id:
+                    game.add_message(sconn, o.id, "heard", f'{t.name} says: "{reply}"')
+            if not ai_character:
+                game.add_message(sconn, t.id, "reply",
+                                 f'You were away, so the narrator answered {speaker.name} for you: "{reply}"')
+            hub.notify(story.name, [speaker.id] + [o.id for o in targets])
+        return None
+
+    # --- Live updates -----------------------------------------------------
+
+    @app.get("/live", response_class=HTMLResponse)
+    def live_fragment(request: Request):
+        """The parts of the play page that change: the chat and who is nearby."""
+        user = current_user(request)
+        if not user:
+            return HTMLResponse("", status_code=401)
+        with running_story() as (story, sconn):
+            character = game.current_character(sconn, user) if story else None
+            if character is None:
+                return HTMLResponse("", status_code=409)  # the page reloads and finds its way
+            return render(
+                request,
+                "_live.html",
+                character=character,
+                messages=game.recent_messages(sconn, character.id),
+                nearby=nearby(story.name, sconn, character),
+            )
+
+    @app.websocket("/ws")
+    async def live_socket(ws: WebSocket):
+        user = ws.session.get("user")
+        st = stories.status(conn())
+        character = None
+        if user and st.online and accounts.account_exists(conn(), user):
+            sconn = stories.open_story_db(stories.find_story(config.stories_dir, st.story))
+            try:
+                character = game.current_character(sconn, user)
+            finally:
+                sconn.close()
+        if character is None:
+            await ws.close(code=1008)
+            return
+        await ws.accept()
+        handle = hub.add(st.story, character.id, ws, user)
+        hub.notify_story(st.story, exclude=handle)  # presence changed
+        try:
+            while True:
+                await ws.receive_text()  # the page pings to keep tunnels from timing out
+        except WebSocketDisconnect:
+            pass
+        finally:
+            hub.remove(st.story, character.id, handle)
+            hub.notify_story(st.story)
+
     return app
+
+
+def narrator_failed(e: NarratorError) -> str:
+    return f"The narrator couldn't respond: {e}. Nothing changed; you can try again."
+
+
+def join_names(names: list[str]) -> str:
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]

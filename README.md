@@ -7,7 +7,9 @@ This repository holds the Coose server. It is built in milestones. So far:
 - **Milestone 1:** accounts, login, story loading and the owner's command line.
 - **Milestone 2:** one player, one character. Players pick or create a character and play it in a chatroom with Actions (two AI passes: a Responder judges the attempt, an Author decides the consequences) and Questions (answered only from what the character knows). The server keeps the world clock, hidden needs, each character's knowledge, and the narrator's working memory.
 
-Multiplayer (Dialogue, witnesses, live updates) arrives in milestone 3.
+- **Milestone 3:** multiplayer. Each open play page holds a live connection, so chatrooms update instantly and players can see who is nearby and whether a player is there. Dialogue reaches characters at the same location; when a recipient's player is away, the narrator answers for them as `absent_characters` allows (AI-created characters always answer). After each Action, a witness pass decides who noticed it and tells each witness only what they perceived. The narrator can introduce named characters, who become playable unless `ai_characters_public` is false.
+
+Time skips, rounds and the admin tools arrive in later milestones.
 
 ## Setup
 
@@ -47,7 +49,7 @@ Other owner commands: `coose pause`, `coose resume`, `coose status`, `coose acco
 
 Only one story runs at a time. Pausing or switching never deletes anything; players who log in meanwhile see a "story offline" notice.
 
-To put the site on the internet, point a Cloudflare tunnel at the `host:port` in `coose.toml`. Leave `host` as `127.0.0.1` so the server is only reachable through the tunnel.
+To put the site on the internet, point a Cloudflare tunnel at the `host:port` in `coose.toml`. Leave `host` as `127.0.0.1` so the server is only reachable through the tunnel. Cloudflare tunnels carry the WebSocket at `/ws` that live updates use without extra setup. Run a single server process: who is online is kept in memory.
 
 ## Development
 

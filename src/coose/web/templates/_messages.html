@@ -1,0 +1,15 @@
+{% set labels = {"action": "! Action", "question": "? Question", "dialogue": "\"\" Dialogue", "command": "/ Command"} %}
+<div class="chat" id="chat" aria-live="polite">
+    {% for m in messages %}
+    <article class="msg msg--{{ m.kind }}" {% if loop.last %}id="latest"{% endif %}>
+        {%- if m.kind in labels -%}
+        <span class="msg__tag">{{ labels[m.kind] }}</span>{% if m.username %}<small>{{ m.username }}</small>{% endif %}
+{{ m.text }}
+        {%- else -%}
+        {{ m.text }}
+        {%- endif -%}
+    </article>
+    {% else %}
+    <p class="text-muted">Nothing has happened yet. Describe what {{ character.name }} does.</p>
+    {% endfor %}
+</div>
