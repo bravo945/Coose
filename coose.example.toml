@@ -1,0 +1,24 @@
+# Copy this file to coose.toml and adjust it for your machine.
+# Relative paths are resolved from the folder this file lives in.
+
+[server]
+# The public site. Point your Cloudflare tunnel at this address.
+host = "127.0.0.1"
+port = 8000
+
+# Where the server keeps its own database (accounts, which story runs).
+data_dir = "data"
+
+# Where story folders live. Each subfolder is one story instance,
+# built from the story-template folder.
+stories_dir = "stories"
+
+# Name of the environment variable holding the secret used to sign login
+# cookies. Set it to a long random value, for example:
+#   export COOSE_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+secret_key_env = "COOSE_SECRET_KEY"
+
+[ai]
+# Name of the environment variable holding the Claude API key.
+# The key itself never goes in this file or in a story folder.
+api_key_env = "ANTHROPIC_API_KEY"

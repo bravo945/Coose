@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Story offline · Coose{% endblock %}
+{% block content %}
+<div class="prose flow">
+    <h1>Story offline</h1>
+    <p class="alert">
+        {% if server.story %}
+        This story is paused right now. Your character and everything that has happened are saved, and play picks up where it left off when the story comes back online.
+        {% else %}
+        No story is running right now. Check back later.
+        {% endif %}
+    </p>
+</div>
+{% endblock %}
