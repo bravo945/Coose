@@ -25,6 +25,7 @@
     .msg--reply    { background: transparent; color: var(--text-muted); border-inline-start-color: var(--text); }
 
     .msg--narration, .msg--answer, .msg--witness { background: transparent; border-inline-start-color: var(--surface-2); }
+    .msg--round { background: transparent; border-inline-start-color: var(--gold); font-style: italic; }
     .msg--system { background: transparent; color: var(--text-muted); border-inline-start-color: var(--red); }
 
     .doc { white-space: pre-wrap; }

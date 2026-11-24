@@ -1,0 +1,20 @@
+<div id="status" class="stack">
+    <div>
+        <h2 class="card__title">{{ character.name }}</h2>
+        <small>{{ story.display_name }} · Round {{ round_number }} · {{ world_time.strftime("%a %d %b %Y, %H:%M") }}</small>
+    </div>
+    {% if skipping %}
+    <p class="alert">{{ character.name }} is busy until the next round, when time skips ahead.</p>
+    {% elif skip_coming %}
+    <small>A time skip is coming at the next round.</small>
+    {% endif %}
+    {% if round_vote %}
+    {% set voted = user.lower() in (votes | map("lower") | list) %}
+    <form method="post" action="/vote" class="stack">
+        <button class="btn" type="submit" {% if voted %}disabled{% endif %}>
+            {% if voted %}You voted for the next round{% else %}Vote for the next round{% endif %}
+        </button>
+        <small>{{ votes | length }} of {{ online | length }} online {{ "player" if online | length == 1 else "players" }} voted. Everyone online has to agree.</small>
+    </form>
+    {% endif %}
+</div>

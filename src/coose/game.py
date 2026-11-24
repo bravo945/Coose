@@ -59,6 +59,7 @@ MAX_DESCRIPTION_WORDS = 300
 MAX_STARTING_ITEMS = 4
 PLAYER_KINDS = ("action", "question", "dialogue")
 ABSENT_MODES = ("speak_only", "act_within_reason", "freeze")
+SKIP_MODES = ("ai_plays", "backfill_on_return")
 
 
 class GameError(ValueError):
@@ -77,6 +78,10 @@ class Settings:
     tracked_needs: dict[str, float]  # need -> hours until it runs out
     ai_characters_public: bool = True
     absent_characters: str = "speak_only"
+    actions_per_round: int = 5
+    round_vote: bool = True
+    skip_threshold_minutes: int = 10
+    offline_during_skips: str = "ai_plays"
 
     @classmethod
     def from_dict(cls, raw: dict) -> "Settings":
@@ -94,14 +99,20 @@ class Settings:
             players_per_character=max(1, int(raw.get("players_per_character", 3))),
             tracked_needs={str(k): float(v) for k, v in needs.items()},
             ai_characters_public=bool(raw.get("ai_characters_public", True)),
-            absent_characters=_absent_mode(raw.get("absent_characters", "speak_only")),
+            absent_characters=_one_of("absent_characters", raw.get("absent_characters", "speak_only"),
+                                      ABSENT_MODES),
+            actions_per_round=max(1, int(raw.get("actions_per_round", 5))),
+            round_vote=bool(raw.get("round_vote", True)),
+            skip_threshold_minutes=max(0, int(raw.get("skip_threshold_minutes", 10))),
+            offline_during_skips=_one_of("offline_during_skips", raw.get("offline_during_skips", "ai_plays"),
+                                         SKIP_MODES),
         )
 
 
-def _absent_mode(value) -> str:
+def _one_of(name: str, value, allowed: tuple[str, ...]) -> str:
     value = str(value)
-    if value not in ABSENT_MODES:
-        raise GameError(f"absent_characters must be one of: {', '.join(ABSENT_MODES)}")
+    if value not in allowed:
+        raise GameError(f"{name} must be one of: {', '.join(allowed)}")
     return value
 
 
@@ -120,12 +131,14 @@ def _set(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
-def init_world(conn: sqlite3.Connection, world_state_text: str) -> None:
-    """Seed world values the first time a story runs. Safe to call every time."""
+def init_world(conn: sqlite3.Connection, world_state_text: str) -> bool:
+    """Seed world values the first time a story runs. Safe to call every time.
+    Returns True when the world was new."""
     with conn:
-        conn.execute("INSERT OR IGNORE INTO world VALUES ('clock_minutes', '0')")
+        fresh = conn.execute("INSERT OR IGNORE INTO world VALUES ('clock_minutes', '0')").rowcount == 1
         conn.execute("INSERT OR IGNORE INTO world VALUES ('working_memory', '[]')")
         conn.execute("INSERT OR IGNORE INTO world VALUES ('world_state', ?)", (world_state_text,))
+    return fresh
 
 
 def clock_minutes(conn: sqlite3.Connection) -> int:
@@ -155,7 +168,7 @@ class Character:
     condition: str
     inventory: list[str]
     knowledge: list[str]
-    needs: dict[str, int]
+    needs: dict[str, int]  # need -> world clock minute it was last met; hidden
     alive: bool
     visibility: str
     owner: str | None
@@ -218,7 +231,7 @@ def create_character(
         raise GameError(f"Characters can start with at most {MAX_STARTING_ITEMS} items.")
     if visibility not in ("public", "locked"):
         raise GameError("Visibility must be public or locked.")
-    needs = {n: 0 for n in settings.tracked_needs}
+    needs = {n: clock_minutes(conn) for n in settings.tracked_needs}
     try:
         with conn:
             cur = conn.execute(
@@ -335,11 +348,14 @@ def recent_messages(conn: sqlite3.Connection, character_id: int, limit: int = 20
 NEED_BANDS = ((0.5, "fine"), (0.75, "getting low"), (1.0, "urgent"))
 
 
-def need_levels(character: Character, settings: Settings) -> dict[str, str]:
-    """Describe each hidden need in words. Players never see the numbers."""
+def need_levels(conn: sqlite3.Connection, character: Character, settings: Settings) -> dict[str, str]:
+    """Describe each hidden need in words. Players never see the numbers.
+    Needs run down with the world clock, for every character alike."""
+    now = clock_minutes(conn)
     levels = {}
     for need, hours in settings.tracked_needs.items():
-        used = character.needs.get(need, 0) / 60 / hours if hours > 0 else 0
+        since = now - character.needs.get(need, 0)
+        used = since / 60 / hours if hours > 0 else 0
         levels[need] = next((word for limit, word in NEED_BANDS if used < limit), "run out")
     return levels
 
@@ -368,9 +384,12 @@ class ActionOutcome:
 _write_lock = threading.Lock()
 
 
-def apply_action(conn: sqlite3.Connection, character: Character, outcome: ActionOutcome) -> Character:
-    """Advance the clock and write the Action's consequences, in one transaction."""
-    minutes = max(0, int(outcome.minutes_elapsed))
+def apply_action(conn: sqlite3.Connection, character: Character, outcome: ActionOutcome, *,
+                 advance_clock: bool = True, count: bool = True) -> Character:
+    """Write an Action's consequences in one transaction: the character, the
+    working memory, the clock (unless the time is held for a skip) and the
+    round's action count (unless this isn't a player's Action)."""
+    minutes = max(0, int(outcome.minutes_elapsed)) if advance_clock else 0
     with _write_lock:
         character = get_character(conn, character.id)  # pick up anything witnessed meanwhile
         inventory = list(character.inventory)
@@ -380,12 +399,15 @@ def apply_action(conn: sqlite3.Connection, character: Character, outcome: Action
                 inventory.remove(match)
         inventory += [i for i in outcome.inventory_add if i.strip()]
         knowledge = character.knowledge + [k for k in outcome.learned if k.strip()]
+        now = clock_minutes(conn) + minutes
         met = {n.lower() for n in outcome.needs_met}
-        needs = {n: 0 if n.lower() in met else v + minutes for n, v in character.needs.items()}
+        needs = {n: now if n.lower() in met else v for n, v in character.needs.items()}
         memory = working_memory(conn) + [m for m in outcome.memory_add if m.strip()]
         with conn:
-            _set(conn, "clock_minutes", str(clock_minutes(conn) + minutes))
+            _set(conn, "clock_minutes", str(now))
             _set(conn, "working_memory", json.dumps(memory))
+            if count:
+                _set(conn, "round_actions", str(int(_get(conn, "round_actions", "0")) + 1))
             conn.execute(
                 "UPDATE characters SET location = ?, condition = ?, inventory = ?, knowledge = ?, needs = ?, "
                 "alive = ? WHERE id = ?",
