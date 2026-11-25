@@ -7,7 +7,7 @@ This repository holds the Coose server. It is built in milestones. So far:
 - **Milestone 1:** accounts, login, story loading and the owner's command line.
 - **Milestone 2:** one player, one character. Players pick or create a character and play it in a chatroom with Actions (two AI passes: a Responder judges the attempt, an Author decides the consequences) and Questions (answered only from what the character knows). The server keeps the world clock, hidden needs, each character's knowledge, and the narrator's working memory.
 
-- **Milestone 3:** multiplayer. Each open play page holds a live connection, so chatrooms update instantly and players can see who is nearby and whether a player is there. Dialogue reaches characters at the same location; when a recipient's player is away, the narrator answers for them as `absent_characters` allows (AI-created characters always answer). After each Action, a witness pass decides who noticed it and tells each witness only what they perceived. The narrator can introduce named characters, who become playable unless `ai_characters_public` is false.
+- **Milestone 3:** multiplayer. Each open play page holds a live connection, so chatrooms update instantly and players can see who is nearby and whether a player is there. (Dialogue was its own prompt type here; since the first server test, speech is part of an Action.) After each Action, a witness pass decides who noticed it and tells each witness only what they perceived. The narrator can introduce named characters, who become playable unless `ai_characters_public` is false.
 
 - **Milestone 4:** time and rounds. Hidden needs run down with the world clock for every character. An Action longer than `skip_threshold_minutes` becomes a time skip: the character waits for the next round (Questions still work), everyone online is told, and the longest pending skip moves the clock at the round change. If nobody else is online, the skip happens at once. A round comes after `actions_per_round` Actions, or when every online player votes for it (`round_vote`). At each round change the AI rewrites the World State, trims its working memory, updates every character and sends each one a short in-character notice. The old World State and a summary go to `Logbook/Round N.md`, and the story database is snapshotted. Offline characters pass a skip as `offline_during_skips` says: the AI plays them, or they get a backstory when their player returns.
 
@@ -16,6 +16,11 @@ This repository holds the Coose server. It is built in milestones. So far:
 - **Milestone 6:** story admins, caps and schedules. The owner appoints story admins (`coose admin add`), who get an Admin chatroom on the site for out-of-character commands: force a round, roll back, move the clock, edit characters and the World State, give and take items, kill and revive, remove players, approve AI-written lore, and `/intervene` or `/rewrite` to have the AI carry out any change, telling each character only what they perceive. The owner can cap a story (`coose cap`), which pauses it after a number of Actions or rounds, and give it opening hours (`coose schedule`), which open and close it while `coose serve` runs. The Premise is now cached for an hour between AI calls, and `coose usage` and playtests show estimated dollar costs.
 
 - **Milestone 7:** collective characters, AI-written lore and the owner panel. Players can request a collective character, such as a militia or a town; once a story admin approves it (`/approve <name>`), it is played like any other but can split into parts in different places, and the narrator stops knowledge travelling between parts by unrealistic means. When the AI invents lasting lore at a round change or during `/intervene`, it writes it to `Premise/AI Additions/` for story admins to approve into the Premise or reject; it never edits the author's files. `coose panel` serves a private owner panel with the terminal's controls (stories, pause and resume, caps, schedules, story admins, accounts, AI costs) for the owner's Tailscale network.
+
+- **After the first server test:** cheaper AI, characters that stick, and a console.
+  - *Cost.* The first real session cost about $5 for 16 prompts, three quarters of it cache writes: each kind of AI pass had its own output schema, and the schema is part of the cached prefix, so every pass kind paid its own write of the whole Premise (and paid again whenever the AI added lore). Every pass now shares one output schema, so one cache serves them all; AI-written lore sits behind its own cache breakpoint; the scene is cached for a few minutes so the Author and witness passes read it instead of paying for it again; and older chat in the scene is shortened. The owner can pick the model, effort and thinking for each AI task per story (`coose ai`, or the panel), and run Actions as one combined pass instead of two.
+  - *Characters.* Speech is part of an Action now; the Dialogue prompt type is gone. Each scene lists the people the game tracks, who is right there, and whether the narrator may voice them (`absent_characters` still decides for away players). The narrator adds people who matter as characters even before anyone knows their name, says who is with the acting character so "Here with" lines up, and a Question can ask it to add someone.
+  - *Console.* The owner panel has a console that runs the same `coose` commands as the terminal.
 
 ## Setup
 
@@ -57,6 +62,19 @@ coose serve                   # starts the player site on host:port from coose.t
 
 Other owner commands: `coose pause`, `coose resume`, `coose status`, `coose account list`, `coose account password <name>`, `coose account remove <name>`.
 
+### AI models, effort and cost
+
+```sh
+coose ai show my-story                                   # model and effort per task
+coose ai set my-story witnesses --model claude-haiku-5-5 --effort low
+coose ai set my-story question --model claude-sonnet-5-5 --effort low --thinking off
+coose ai set my-story all --effort low                   # every task at once
+coose ai passes my-story 1                               # Actions in one combined pass (cheaper)
+coose ai reset my-story                                  # back to coose.toml's [ai] defaults
+```
+
+Tasks are `action` (Responder and Author), `witnesses`, `question`, `round`, `backfill` and `admin` (`/intervene`, `/rewrite`). Changes apply from the next prompt. Lower effort means less thinking, and thinking is billed as output. Claude Opus 5.5 always thinks, so lower its effort instead; other models can turn thinking off at `high` effort or below. Each model keeps its own cache of the Premise, so every model in use pays a cache write about once an hour: almost nothing on Haiku, more on Opus. Server-wide defaults go in `coose.toml` (see `[ai]` and `[ai.tasks.<task>]` in `coose.example.toml`). `coose usage` and the panel show what each pass costs.
+
 ### Story admins, caps and schedules
 
 ```sh
@@ -74,6 +92,8 @@ Accounts listed under `admins` in a story's `Settings.yaml` are story admins too
 export COOSE_PANEL_PASSWORD="..."        # the panel's own password
 coose panel                               # serves [panel] host:port from coose.toml
 ```
+
+The panel's **Console** runs any `coose` command (`status`, `usage`, `cap ...`, `ai ...`, `--help`) as if typed in the server's terminal; `serve`, `panel` and `playtest` stay in the terminal. It can't answer prompts, so add `--yes` to `rollback`. Each story's card also has an **AI models and effort** section.
 
 Set `[panel] host` in `coose.toml` to this machine's Tailscale address (`tailscale ip -4`) so only your tailnet can reach it. Never point the Cloudflare tunnel at the panel's port. `coose panel` refuses to listen on every network (`0.0.0.0`). It runs alongside `coose serve` as a second process.
 

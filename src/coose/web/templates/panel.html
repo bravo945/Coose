@@ -49,6 +49,39 @@
             <button class="btn" type="submit">Make story admin</button>
             <button class="btn" type="submit" name="remove" value="1">Remove story admin</button>
         </form>
+        <details class="stack">
+            <summary>AI models and effort</summary>
+            <p class="text-muted">Changes apply from the next prompt. Lower effort and cheaper models cost less;
+                each model in use keeps its own cache of the Premise.</p>
+            <table>
+                <thead><tr><th>Task</th><th>Model</th><th>Effort</th><th>Thinking</th><th></th></tr></thead>
+                <tbody>
+                {% for t in tasks %}{% set cur = r.ai.tasks[t] %}{% set fid = "ai-" ~ s.name ~ "-" ~ t %}
+                <tr>
+                    <td><form id="{{ fid }}" method="post" action="/ai"><input type="hidden" name="name" value="{{ s.name }}"><input type="hidden" name="task" value="{{ t }}"></form>
+                        <strong>{{ t }}</strong><br><small class="text-muted">{{ task_help[t] }}</small></td>
+                    <td><select form="{{ fid }}" name="model" aria-label="{{ t }} model">{% for m in models %}<option {% if m == cur.model %}selected{% endif %}>{{ m }}</option>{% endfor %}</select></td>
+                    <td><select form="{{ fid }}" name="effort" aria-label="{{ t }} effort">{% for e in efforts %}<option {% if e == cur.effort %}selected{% endif %}>{{ e }}</option>{% endfor %}</select></td>
+                    <td><select form="{{ fid }}" name="thinking" aria-label="{{ t }} thinking">{% for o in ("on", "off") %}<option {% if o == cur.thinking %}selected{% endif %}>{{ o }}</option>{% endfor %}</select></td>
+                    <td><button form="{{ fid }}" class="btn" type="submit">Save</button></td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            <form class="cluster" method="post" action="/ai/passes"><input type="hidden" name="name" value="{{ s.name }}">
+                <label>Each Action uses
+                    <select name="passes">
+                        <option value="2" {% if r.ai.action_passes == 2 %}selected{% endif %}>2 passes: Responder, then Author</option>
+                        <option value="1" {% if r.ai.action_passes == 1 %}selected{% endif %}>1 combined pass (cheaper)</option>
+                    </select></label>
+                <button class="btn" type="submit">Save</button>
+            </form>
+            <form method="post" action="/ai/reset"><input type="hidden" name="name" value="{{ s.name }}">
+                <button class="btn" type="submit">Back to the coose.toml defaults</button></form>
+            <small class="text-muted">Prices per million tokens (input / output):
+                {% for m, i, o in prices %}{{ m }} ${{ "%g" | format(i) }} / ${{ "%g" | format(o) }}{% if not loop.last %}; {% endif %}{% endfor %}.
+                Thinking counts as output.</small>
+        </details>
         {% endif %}
     </section>
     {% endfor %}
@@ -63,6 +96,27 @@
             <button class="btn" type="submit" name="do_what" value="password">Set password</button>
             <button class="btn btn--danger" type="submit" name="do_what" value="remove">Remove</button>
         </form>
+    </section>
+
+    <section class="card stack" id="console">
+        <h2 class="card__title">Console</h2>
+        <p class="text-muted">Runs the same <code>coose</code> commands as the server's terminal, for example
+            <code>status</code>, <code>usage --since 2026-11-25</code>, <code>ai show atf</code>,
+            <code>cap atf --actions 20</code> or <code>--help</code>. Commands that start servers stay in the terminal.</p>
+        {% if console %}
+        <div class="stack">
+            {% for e in console %}
+            <pre {% if loop.last %}id="console-latest"{% endif %}>&gt; coose {{ e.command }}
+{{ e.output }}</pre>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <form class="cluster" method="post" action="/console">
+            <label for="console-command">coose</label>
+            <input id="console-command" name="command" size="48" autocomplete="off" autofocus placeholder="status">
+            <button class="btn btn--solid" type="submit">Run</button>
+        </form>
+        {% if console %}<form method="post" action="/console/clear"><button class="btn" type="submit">Clear</button></form>{% endif %}
     </section>
 
     <section class="card stack">

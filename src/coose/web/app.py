@@ -19,9 +19,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from .. import accounts, admin, controls, db, game, rounds, stories
+from .. import accounts, admin, aisettings, controls, db, game, rounds, stories
 from ..config import Config
-from ..narrator import AuthorResult, ClaudeNarrator, Narrator, NarratorError, Scene, format_minutes, load_premise
+from ..narrator import (RECENT_MESSAGES, AuthorResult, ClaudeNarrator, Narrator, NarratorError, NewCharacter, Scene,
+                        describe_people, format_minutes, load_premise)
 from .live import Hub
 
 log = logging.getLogger(__name__)
@@ -51,8 +52,16 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
         finally:
             c.close()
 
+    def ai_profile() -> aisettings.Profile:
+        """The running story's AI settings, read fresh for every call so panel changes apply at once."""
+        c = conn()
+        try:
+            return aisettings.profile(c, stories.status(c).story, config.ai_defaults())
+        finally:
+            c.close()
+
     narrator = narrator or ClaudeNarrator(config.model, config.effort, config.api_key_env, usage_log=record_usage,
-                                           cache_ttl=config.cache_ttl)
+                                           cache_ttl=config.cache_ttl, profile=ai_profile)
     hub = app.state.hub = Hub()
     round_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)  # one round change at a time
 
@@ -114,7 +123,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
     def nearby(story_name: str, sconn, character: game.Character) -> list[dict]:
         """Who is at the same location, and whether a player is there to answer."""
         return [
-            {"id": c.id, "name": c.name, "online": hub.active(story_name, c.id)}
+            {"id": c.id, "name": c.name, "online": hub.active(story_name, c.id), "ai": c.owner is None}
             for c in game.characters_here(sconn, character)
         ]
 
@@ -136,6 +145,10 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
 
     def make_scene(sconn, story, character: game.Character) -> Scene:
         settings = story.game_settings()
+        others = game.other_characters(sconn, character.id)
+        here = {c.id for c in game.characters_here(sconn, character)}
+        status = {o.id: "ai" if o.owner is None else ("online" if hub.active(story.name, o.id) else "away")
+                  for o in others}
         return Scene(
             story=story.display_name,
             world_time=game.world_time(sconn, settings),
@@ -143,9 +156,26 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             working_memory=game.working_memory(sconn),
             character=character,
             need_levels=game.need_levels(sconn, character, settings),
-            recent=game.recent_messages(sconn, character.id, limit=30),
+            recent=game.recent_messages(sconn, character.id, limit=RECENT_MESSAGES),
             round_number=rounds.current_round(sconn),
+            people=describe_people(others, here, status, settings.absent_characters),
         )
+
+    def add_people(sconn, story, character: game.Character, new: list[NewCharacter], present: list[str]) -> list[str]:
+        """Track the people the narrator introduced, and line up who is with `character`. Returns new names."""
+        settings = story.game_settings()
+        character = game.get_character(sconn, character.id)
+        here = character.location.strip().lower()
+        added, with_them = [], list(present)
+        for person in new:
+            c = game.create_ai_character(sconn, settings, name=person.name, description=person.description,
+                                         location=person.location or character.location)
+            if c is not None:
+                added.append(c.name)
+                if c.location.strip().lower() == here:
+                    with_them.append(c.name)
+        game.gather(sconn, character, with_them)
+        return added
 
     def tell_online(story_name: str, sconn, text: str, exclude: int | None = None) -> None:
         targets = [cid for cid in hub.online_characters(story_name) if cid != exclude]
@@ -319,7 +349,6 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
         background: BackgroundTasks,
         kind: str = Form("action"),
         text: str = Form(""),
-        recipient: list[int] = Form([]),
     ):
         user = current_user(request)
         if not user:
@@ -356,11 +385,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             try:
                 character = game.get_character(sconn, character.id)  # fresh, under the lock
                 premise = load_premise(story.path)
-                if kind == "dialogue":
-                    error = run_dialogue(story, sconn, character, user, text, recipient, premise)
-                    if error:
-                        request.session["error"] = error
-                elif kind == "question":
+                if kind == "question":
                     run_question(story, sconn, character, user, text, premise)
                 else:
                     run_action(story, sconn, character, user, text, premise, background)
@@ -374,9 +399,15 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
         hub.notify(story.name, [character.id])
         try:
             answer = narrator.question(premise, scene, text)
-            game.add_message(sconn, character.id, "answer", answer)
         except NarratorError as e:
             game.add_message(sconn, character.id, "system", narrator_failed(e))
+            hub.notify(story.name, [character.id])
+            return
+        game.add_message(sconn, character.id, "answer", answer.answer)
+        added = add_people(sconn, story, character, answer.new_characters, answer.present)
+        if added:
+            game.add_message(sconn, character.id, "system", f"Now tracked as characters: {join_names(added)}.")
+            hub.notify_story(story.name)  # others' "who is here" lists change too
         hub.notify(story.name, [character.id])
 
     def run_action(story, sconn, character, user, text, premise, background: BackgroundTasks) -> None:
@@ -392,12 +423,12 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             hub.notify(story.name, [character.id])
             return
         skip = result.minutes_elapsed > settings.skip_threshold_minutes
-        game.apply_action(sconn, character, game.ActionOutcome(**result.model_dump(exclude={"new_characters"})),
+        game.apply_action(sconn, character, game.ActionOutcome(**result.model_dump(exclude={"new_characters",
+                                                                                         "present"})),
                           advance_clock=not skip)
         game.add_message(sconn, character.id, "narration", result.narration)
-        for new in result.new_characters:
-            game.create_ai_character(sconn, settings, name=new.name, description=new.description,
-                                     location=new.location)
+        if add_people(sconn, story, character, result.new_characters, result.present) or result.present:
+            hub.notify_story(story.name)
         skip_now = False
         if skip:
             rounds.add_skip(sconn, character.id, result.minutes_elapsed, text)
@@ -534,46 +565,6 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             hub.notify(story_name, seen)
         finally:
             sconn.close()
-
-    def run_dialogue(story, sconn, speaker, user, text, recipient_ids, premise) -> str | None:
-        """Speak to characters at the same place. Returns an error for the player, if any."""
-        here = {c.id: c for c in game.characters_here(sconn, speaker)}
-        if not here:
-            return f"There's nobody here for {speaker.name} to talk to."
-        targets = [here[i] for i in dict.fromkeys(recipient_ids) if i in here] or list(here.values())
-        names = join_names([t.name for t in targets])
-        game.add_message(sconn, speaker.id, "dialogue", f'To {names}: "{text}"', username=user)
-        for t in targets:
-            also = [o.name for o in targets if o.id != t.id]
-            to_whom = f"you and {join_names(also)}" if also else "you"
-            game.add_message(sconn, t.id, "heard", f'{speaker.name} says to {to_whom}: "{text}"')
-        game.add_memory(sconn, [f'{speaker.name} said to {names}: "{text[:300]}"'])
-        hub.notify(story.name, [speaker.id] + [t.id for t in targets])
-
-        mode = story.game_settings().absent_characters
-        for t in targets:
-            if hub.active(story.name, t.id):
-                continue  # their player is here to answer
-            ai_character = t.owner is None
-            if mode == "freeze" and not ai_character:
-                game.add_message(sconn, speaker.id, "narration", f"{t.name} seems distracted and doesn't answer.")
-                continue
-            try:
-                reply = narrator.reply_as(premise, make_scene(sconn, story, t), speaker.name, text,
-                                          "act_within_reason" if ai_character else mode)
-            except NarratorError as e:
-                game.add_message(sconn, speaker.id, "system", f"{t.name} didn't answer: {narrator_failed(e)}")
-                continue
-            game.add_message(sconn, speaker.id, "heard", f'{t.name} says: "{reply}"')
-            game.add_memory(sconn, [f'{t.name} (player away) answered {speaker.name}: "{reply[:300]}"'])
-            for o in targets:
-                if o.id != t.id:
-                    game.add_message(sconn, o.id, "heard", f'{t.name} says: "{reply}"')
-            if not ai_character:
-                game.add_message(sconn, t.id, "reply",
-                                 f'You were away, so the narrator answered {speaker.name} for you: "{reply}"')
-            hub.notify(story.name, [speaker.id] + [o.id for o in targets])
-        return None
 
     # --- Story admins -----------------------------------------------------
 

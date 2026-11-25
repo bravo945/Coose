@@ -35,7 +35,7 @@ def test_scenario_validation(tmp_path):
     bad.write_text("players: [{user: a, character: {name: A}}]\nsteps: [{zed: '! hi'}]\n")
     with pytest.raises(playtest.ScenarioError, match="unknown player"):
         playtest.Scenario.load(bad)
-    assert playtest.parse_prompt('"" hi there') == ("dialogue", "hi there")
+    assert playtest.parse_prompt('"" hi there') == ("action", 'I say, "hi there"')
 
 
 def test_playtest_runs_on_a_scratch_copy(config, story_dir, tmp_path):
@@ -47,18 +47,27 @@ def test_playtest_runs_on_a_scratch_copy(config, story_dir, tmp_path):
     text = out.read_text()
     assert "Players: ana as Mara, ben as Jon (away)" in text
     assert "You do it: I look around." in text
-    assert 'Mara says to you: "Hello, Jon."' in text
+    assert 'You do it: I say, "Hello, Jon."' in text
     assert "## Step 4: ben (action): I wave." in text
     assert "round 2" in text and "Logbook: Round 1.md" in text
     assert narrator.calls.count("round") == 2  # two Actions, then a vote by the only online player
     assert not (story_dir / ".coose").exists() or not list((story_dir / "Logbook").glob("Round [0-9]*.md"))
 
 
+PARTS = ("responder", "author", "witnesses", "answer", "round", "backfill", "intervention")
+
+
+def answer_json(text: str) -> str:
+    out = {p: None for p in PARTS}
+    out["answer"] = {"answer": text, "new_characters": [], "present": []}
+    return json.dumps(out)
+
+
 def test_api_usage_is_recorded_and_summarised(config, conn):
     def handler(request):
         return httpx2.Response(200, json={
             "id": "m", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
-            "content": [{"type": "text", "text": "You don't know."}], "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": answer_json("You don't know.")}], "stop_reason": "end_turn",
             "stop_sequence": None,
             "usage": {"input_tokens": 120, "output_tokens": 30, "cache_read_input_tokens": 9000,
                       "cache_creation_input_tokens": 0},
@@ -93,3 +102,79 @@ def test_cost_estimates():
     assert pricing.estimate("claude-opus-5-5", 0, 0, 0, 1_000_000, "5m") == 5.0
     assert pricing.estimate("claude-opus-5-5", 0, 0, 0, 1_000_000, "1h") == 8.0
     assert pricing.estimate("some-future-model", 1, 1, 1, 1) is None
+
+
+def fake_api(replies: list[dict], sent: list[dict]):
+    """A Claude API stand-in: records each request body and answers with the next reply."""
+    import anthropic
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        out = {p: None for p in PARTS}
+        out.update(replies[len(sent) - 1])
+        return httpx2.Response(200, json={
+            "id": "m", "type": "message", "role": "assistant", "model": sent[-1]["model"],
+            "content": [{"type": "text", "text": json.dumps(out)}], "stop_reason": "end_turn", "stop_sequence": None,
+            "usage": {"input_tokens": 10, "output_tokens": 10, "cache_read_input_tokens": 0,
+                      "cache_creation_input_tokens": 0},
+        })
+
+    return anthropic.Anthropic(api_key="k", http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+
+AUTHOR = {"narration": "You knock.", "minutes_elapsed": 1, "location": "", "condition": "", "inventory_add": [],
+          "inventory_remove": [], "learned": [], "needs_met": [], "alive": True, "memory_add": [],
+          "new_characters": [], "present": [], "parts": []}
+
+
+def scene():
+    from datetime import datetime
+
+    from coose import game
+    from coose.narrator import Scene
+
+    c = game.Character(1, "Mara", "d", "Gate", "ok", [], [], {}, True, "public", "nil")
+    return Scene("S", datetime(2035, 1, 1), "", [], c, {}, [], people=["- Dale | HERE with them | ok | ..."])
+
+
+def test_every_pass_shares_one_cached_prefix():
+    """The token bill from the first server test: each pass had its own schema, so each paid its own
+    cache write of the whole Premise. Now every pass sends the same schema and system prompt."""
+    from coose.narrator import ADDITIONS_MARK
+
+    sent = []
+    n = ClaudeNarrator("claude-opus-5-5", "medium", "NONE")
+    n._client = fake_api([{"responder": {"outcome": "success", "reasoning": "r", "draft": "d"}},
+                          {"author": AUTHOR}, {"answer": {"answer": "No.", "new_characters": [], "present": []}}],
+                         sent)
+    premise = "## Premise/World.md (Premise)\nA world." + ADDITIONS_MARK + "## Premise/AI Additions/Gate.md\nNew."
+    result = n.action(premise, scene(), "I knock.")
+    n.question(premise, scene(), "Who is here?")
+    assert result.narration == "You knock."
+    assert [r["system"] for r in sent[1:]] == [sent[0]["system"]] * 2
+    assert [r["output_config"]["format"] for r in sent[1:]] == [sent[0]["output_config"]["format"]] * 2
+    system = sent[0]["system"]
+    assert system[1]["cache_control"]["ttl"] == "1h" and "A world." in system[1]["text"]
+    assert "New." not in system[1]["text"] and "New." in system[2]["text"]  # lore cached apart
+    # The scene is cached for the Author to read; it is the same text in both passes.
+    first, second = sent[0]["messages"][0]["content"][0], sent[1]["messages"][0]["content"][0]
+    assert first == second and first["cache_control"]["ttl"] == "5m" and "Dale | HERE" in first["text"]
+
+
+def test_models_and_effort_follow_the_story_settings():
+    from coose import aisettings
+
+    sent = []
+    base = aisettings.defaults("claude-opus-5-5", "medium")
+    chosen = aisettings.Profile({**base.tasks, "question": aisettings.TaskSettings("claude-haiku-5-5", "low", "off")},
+                                action_passes=1)
+    n = ClaudeNarrator("claude-opus-5-5", "medium", "NONE", profile=lambda: chosen)
+    n._client = fake_api([{"author": AUTHOR}, {"answer": {"answer": "No.", "new_characters": [], "present": []}}],
+                         sent)
+    n.action("P", scene(), "I knock.")
+    n.question("P", scene(), "Who?")
+    assert len(sent) == 2  # one combined pass for the Action
+    assert sent[0]["model"] == "claude-opus-5-5" and sent[0]["output_config"]["effort"] == "medium"
+    assert sent[0]["fallbacks"] == "default" and "thinking" not in sent[0]
+    assert sent[1]["model"] == "claude-haiku-5-5" and sent[1]["output_config"]["effort"] == "low"
+    assert sent[1]["thinking"] == {"type": "disabled"} and "fallbacks" not in sent[1]

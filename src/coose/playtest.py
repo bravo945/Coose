@@ -21,7 +21,7 @@ A scenario is a YAML file:
         character: {name: Jon, description: A gate guard., location: Drastead gate}
     steps:
       - ana: "! I pry open the warehouse door."
-      - ben: "\\"\\" Who goes there?"      # Dialogue to everyone at the same place
+      - ben: "\\"\\" Who goes there?"      # shorthand for the Action: I say, "Who goes there?"
       - ana: "? What do I know about the GCSA?"
       - vote: [ana, ben]
 """
@@ -37,10 +37,10 @@ from pathlib import Path
 
 import yaml
 
-from . import accounts, db, game, rounds, stories
+from . import accounts, aisettings, db, game, rounds, stories
 from .config import Config
 
-PROMPT_PREFIXES = (('""', "dialogue"), ("!", "action"), ("?", "question"))
+PROMPT_PREFIXES = (('""', "say"), ("!", "action"), ("?", "question"))
 PASSWORD = "playtest-password"
 
 
@@ -95,7 +95,10 @@ def parse_prompt(text: str) -> tuple[str, str]:
     text = text.strip()
     for prefix, kind in PROMPT_PREFIXES:
         if text.startswith(prefix):
-            return kind, text[len(prefix):].strip()
+            rest = text[len(prefix):].strip()
+            if kind == "say":  # speech is an Action now
+                return "action", f'I say, "{rest}"'
+            return kind, rest
     raise ScenarioError(f"Start each prompt with !, ? or \"\": {text[:40]!r}")
 
 
@@ -119,7 +122,8 @@ def run(config: Config, story_name: str, scenario: Scenario, out: Path, keep: bo
             settings_path.write_text(yaml.safe_dump(current, sort_keys=False), encoding="utf-8")
         test_config = Config(host="127.0.0.1", port=0, data_dir=scratch / "data", stories_dir=scratch / "stories",
                              secret_key_env=config.secret_key_env, api_key_env=config.api_key_env,
-                             model=config.model, effort=config.effort, cache_ttl=config.cache_ttl)
+                             model=config.model, effort=config.effort, cache_ttl=config.cache_ttl,
+                             ai_tasks=config.ai_tasks, action_passes=config.action_passes)
         server = db.connect(test_config.server_db_path)
         for p in scenario.players:
             accounts.create_account(server, p.user, PASSWORD)
@@ -131,8 +135,14 @@ def run(config: Config, story_name: str, scenario: Scenario, out: Path, keep: bo
                     db.log_usage(c, source.name, r)
                 finally:
                     c.close()
+            # The same models and effort the owner chose for this story.
+            owner_db = db.connect(config.server_db_path)
+            try:
+                chosen = aisettings.profile(owner_db, source.name, config.ai_defaults())
+            finally:
+                owner_db.close()
             narrator = ClaudeNarrator(config.model, config.effort, config.api_key_env, usage_log=record,
-                                      cache_ttl=config.cache_ttl)
+                                      cache_ttl=config.cache_ttl, profile=lambda: chosen)
         app = create_app(test_config, secret_key="playtest", narrator=narrator)
         transcript = Transcript(story.display_name, scenario, config.cache_ttl)
 

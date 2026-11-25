@@ -38,7 +38,22 @@ model = "claude-opus-5-5"
 effort = "medium"
 
 # How long the Premise and Rulebook stay cached between AI calls: "5m" or "1h".
-# Each kind of AI pass caches its own copy, and a cache that expires has to be
+# All passes on the same model share one cache; a cache that expires has to be
 # written again at a premium. "1h" costs more per write but survives the pauses
 # of real play; "5m" is cheaper only when actions come every few minutes.
 cache_ttl = "1h"
+
+# Actions as 2 passes (a Responder judges, then an Author writes) or 1 combined,
+# cheaper pass.
+action_passes = 2
+
+# Per-task defaults. Tasks: action, witnesses, question, round, backfill, admin.
+# Each takes model, effort and thinking ("on" or "off"; Opus 5.5 always thinks).
+# Each story can override these from the owner panel or with `coose ai`.
+# Every model in use keeps its own Premise cache, written about once an hour.
+# [ai.tasks.witnesses]
+# model = "claude-haiku-5-5"
+# effort = "low"
+# [ai.tasks.question]
+# model = "claude-sonnet-5-5"
+# effort = "low"

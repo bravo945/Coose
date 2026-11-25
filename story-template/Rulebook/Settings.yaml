@@ -17,7 +17,7 @@ ai_characters_public: true      # characters the narrator introduces can be play
 max_players: 9                  # (later)
 players_per_character: 3
 collectives: true               # players may request collective characters (a story admin approves them)
-absent_characters: speak_only   # when a player is away: speak_only | act_within_reason | freeze
+absent_characters: speak_only   # how the narrator may voice a character whose player is away: speak_only | act_within_reason | freeze
 offline_during_skips: ai_plays  # offline characters in a skip: ai_plays | backfill_on_return
 
 # Hidden needs, as hours of in-game time before each runs out

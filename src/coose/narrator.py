@@ -3,29 +3,37 @@
 An Action takes two passes. The Responder judges whether and how the action
 can happen (Rulebook, Premise mechanics, the character's capability). The
 Author then decides the objective consequences and writes the narration the
-acting player sees. When other characters exist, a third pass judges who
+acting player sees. (A story can merge the two into one cheaper pass.) Speech
+is part of an Action: the Author voices the people who answer, within what
+their players allow. When other characters exist, another pass judges who
 witnessed the Action and what each of them perceived. A Question takes one
-pass, answered only from what the character could know. When someone speaks
-to a character nobody is playing right now, one pass answers in their voice.
-A round change is one pass over the whole world (see rounds.py), and a
-character returning after a skip they sat out gets a backstory pass.
+pass, answered only from what the character could know. A round change is
+one pass over the whole world (see rounds.py), and a character returning
+after a skip they sat out gets a backstory pass.
 
-The story's Premise and Rulebook go first in every request as a cached
-system prompt; everything that changes per prompt comes after it.
+Cost: the story's Premise and Rulebook go first in every request as a cached
+system prompt, and every pass shares one output schema so they all share
+that one cache (structured-output schemas are part of the cached prefix, so
+a schema per pass meant a cache per pass). Lore the AI adds goes after the
+Premise behind its own cache breakpoint, so a new addition doesn't rewrite
+the whole Premise. The scene (character, chat, world state) is cached for a
+few minutes too, so the Author and witness passes read it instead of paying
+for it again. Which model runs each task, and how hard it thinks, comes from
+the story's AI settings (aisettings.py).
 """
 
 from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from . import game
+from . import aisettings, game
 
 CORE_RULES = """\
 You are the narrator of a Coose game: a multiplayer roleplay set in the world described below.
@@ -49,6 +57,15 @@ one individual.
 Write narration in the second person, present tense, addressed to the acting character. Keep it \
 vivid but tight: a few short paragraphs at most. Do not invent the player character's own words, \
 feelings or decisions beyond what the action states.
+
+Players speak through Actions: anything their character says is part of what they attempt. Other people \
+answer in the narration. You voice people nobody plays freely. For a character someone plays, follow the \
+note beside them under "People": never write words or decisions for a character whose player is online, and \
+for one whose player is away keep to what the note allows.
+
+Characters are how the game keeps track of people. When a person who is likely to matter again enters the \
+scene, add them as a new character, even if nobody knows their name yet: call them what the acting character \
+would, such as "Front gate guard" or "The lookout". Never add someone who is already listed under People.
 """
 
 PremiseText = str
@@ -69,6 +86,8 @@ class LoreEntry(BaseModel):
 
 PARTS_FIELD = ("Only for a collective character: all of its parts after this, if they split, merge, move or "
                "lose members. Empty for anyone else, or if nothing changed.")
+PRESENT_FIELD = ("Names, exactly as listed under People or as added in new_characters, of everyone who is right "
+                 "there with the acting character afterwards, close enough to talk to. Empty if they are alone.")
 LORE_FIELD = ("Lasting facts about the world you invented that the Premise doesn't already state and that would "
               "matter beyond this moment: places, groups, history, customs. Not events or character details. "
               "Usually empty.")
@@ -83,7 +102,8 @@ class ResponderDraft(BaseModel):
 
 
 class NewCharacter(BaseModel):
-    name: str = Field(description="Their name as people in the world would say it.")
+    name: str = Field(description="Their name as people in the world would say it, or, if nobody knows it yet, "
+                      "a short description the acting character would use, e.g. 'Front gate guard'.")
     description: str = Field(description="Who they are: appearance, role, manner. A few sentences.")
     location: str = Field(description="Where they are now.")
 
@@ -109,9 +129,12 @@ class AuthorResult(BaseModel):
         "world, details to keep consistent this round."
     )
     new_characters: list[NewCharacter] = Field(
-        description="Named people this action brings into the story who are likely to matter again, so they "
-        "can be spoken to and played. Leave empty for unnamed passers-by and for anyone listed under "
-        "existing characters."
+        description="People this action brings into the story who are likely to matter again (named or not), so "
+        "they can be tracked and played. Leave empty for passing crowds and for anyone listed under People."
+    )
+    present: list[str] = Field(
+        default_factory=list,
+        description=PRESENT_FIELD,
     )
     parts: list[Part] = Field(default_factory=list, description=PARTS_FIELD)
 
@@ -197,6 +220,32 @@ class InterventionResult(BaseModel):
     lore: list[LoreEntry] = Field(default_factory=list, description=LORE_FIELD)
 
 
+class QuestionAnswer(BaseModel):
+    answer: str = Field(description="The answer for the player, brief, out of character.")
+    new_characters: list[NewCharacter] = Field(
+        description="Only if the player asks for people their character can perceive right now to be tracked as "
+        "characters, or refers to such a person who isn't listed under People yet: those people. Usually empty."
+    )
+    present: list[str] = Field(default_factory=list, description=PRESENT_FIELD + " Only fill this in together "
+                               "with new_characters; otherwise leave it empty.")
+
+
+class NarratorOutput(BaseModel):
+    """Every pass answers with this one shape and fills in only its own part.
+
+    One shared schema keeps one shared prompt cache: the schema is part of
+    the cached prefix, so a different schema per pass meant paying a full
+    cache write of the Premise for every kind of pass."""
+
+    responder: ResponderDraft | None = Field(description="Only for the Responder pass.")
+    author: AuthorResult | None = Field(description="Only for the Author pass.")
+    witnesses: WitnessPass | None = Field(description="Only for the witness pass.")
+    answer: QuestionAnswer | None = Field(description="Only for a Question.")
+    round: RoundResult | None = Field(description="Only for a round change.")
+    backfill: BackfillResult | None = Field(description="Only for a backstory after a skip.")
+    intervention: InterventionResult | None = Field(description="Only for a story admin command.")
+
+
 # --- Context ------------------------------------------------------------------
 
 @dataclass
@@ -211,6 +260,7 @@ class Scene:
     need_levels: dict[str, str]
     recent: list[game.Message]
     round_number: int = 1
+    people: list[str] = field(default_factory=list)  # one line per other character; see describe_people
 
     def render(self) -> str:
         c = self.character
@@ -234,24 +284,64 @@ class Scene:
                 "Hidden needs (never state these words or any numbers to the player; let them show through "
                 "how the character feels):\n" + "\n".join(f"- {n}: {lvl}" for n, lvl in self.need_levels.items())
             )
+        lines.append("# People (characters the game tracks; never add these again)\n"
+                     + ("\n".join(self.people) or "(nobody else yet)"))
         if self.recent:
-            lines.append("# Recent events in this character's chatroom")
-            lines += [f"[{m.kind}] {m.text}" for m in self.recent]
+            lines.append("# Recent events in this character's chatroom (older ones shortened)")
+            full_from = len(self.recent) - RECENT_IN_FULL
+            lines += [f"[{m.kind}] {m.text if i >= full_from else shorten(m.text)}"
+                      for i, m in enumerate(self.recent)]
         return "\n".join(lines)
 
 
+RECENT_MESSAGES = 16  # chatroom messages each scene carries
+RECENT_IN_FULL = 6    # the newest ones in full; older ones shortened
+SHORTENED_CHARS = 500
+
+
+def shorten(text: str, limit: int = SHORTENED_CHARS) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " ..."
+
+
+ADDITIONS_MARK = "\n\n# Unreviewed lore added by the narrator\n\n"
+
+
 def load_premise(story_path: Path) -> PremiseText:
-    """The story's Premise and Rulebook as one stable block of text."""
-    parts = []
+    """The story's Premise and Rulebook as one stable block of text, with the
+    narrator's own unreviewed additions last so they can be cached apart."""
+    parts, additions = [], []
     for folder, heading in (("Premise", "Premise"), ("Rulebook", "Rulebook")):
         root = story_path / folder
         if not root.is_dir():
             continue
         for f in sorted(root.rglob("*.md"), key=lambda p: str(p).lower()):
             rel = f.relative_to(story_path)
-            label = "unreviewed lore added by the narrator" if "AI Additions" in rel.parts else heading
-            parts.append(f"## {rel} ({label})\n{f.read_text(encoding='utf-8').strip()}")
-    return "\n\n".join(parts)
+            if "AI Additions" in rel.parts:
+                if f.name.lower() != "readme.md":
+                    additions.append(f"## {rel}\n{f.read_text(encoding='utf-8').strip()}")
+                continue
+            parts.append(f"## {rel} ({heading})\n{f.read_text(encoding='utf-8').strip()}")
+    text = "\n\n".join(parts)
+    return text + ADDITIONS_MARK + "\n\n".join(additions) if additions else text
+
+
+def describe_people(others: list[game.Character], here_ids: set[int], status: dict[int, str],
+                    absent_mode: str = "speak_only") -> list[str]:
+    """One line per other living character for the scene: who is right here, and who may be voiced.
+
+    `status` maps a character id to "online", "away" or "ai"."""
+    lines = []
+    for o in sorted(others, key=lambda c: (c.id not in here_ids, c.name.lower())):
+        words = o.description.split()
+        short = " ".join(words[:40]) + (" ..." if len(words) > 40 else "")
+        where = "HERE with them" if o.id in here_ids else f"at {o.location or 'unspecified'}"
+        who = {"online": "played by an online player: never write their words or decisions",
+               "away": f"player away: {ABSENT_INSTRUCTIONS.get(absent_mode, ABSENT_INSTRUCTIONS['speak_only'])}",
+               }.get(status.get(o.id, "ai"), "nobody plays them: you voice them")
+        group = f" | collective, parts: {game.describe_parts(o.parts) or 'one body'}" if o.collective else ""
+        lines.append(f"- {o.name} | {where} | {o.condition} | {who}{group} | {short}")
+    return lines
 
 
 # --- Narrators ----------------------------------------------------------------
@@ -271,9 +361,10 @@ def describe_others(others: list[game.Character]) -> str:
 
 
 ABSENT_INSTRUCTIONS = {
-    "speak_only": "Reply only with words they say aloud. They take no actions while their player is away.",
-    "act_within_reason": "Reply with what they say aloud. You may add a small, harmless gesture or movement in "
-    "brackets if it is natural, but nothing that commits them to anything their player would need to decide.",
+    "speak_only": "you may have them answer briefly in words, in character, but they take no actions",
+    "act_within_reason": "you may have them answer in character, with small harmless gestures, but nothing that "
+    "commits them to anything their player would need to decide",
+    "freeze": "they stay silent and still; they seem distracted",
 }
 
 
@@ -281,12 +372,10 @@ class Narrator(Protocol):
     def action(self, premise: PremiseText, scene: Scene, text: str,
                existing: list[str] | None = None) -> AuthorResult: ...
 
-    def question(self, premise: PremiseText, scene: Scene, text: str) -> str: ...
+    def question(self, premise: PremiseText, scene: Scene, text: str) -> QuestionAnswer: ...
 
     def witnesses(self, premise: PremiseText, scene: Scene, text: str, result: AuthorResult,
                   others: list[game.Character]) -> list[WitnessReport]: ...
-
-    def reply_as(self, premise: PremiseText, scene: Scene, speaker: str, text: str, mode: str) -> str: ...
 
     def round_change(self, premise: PremiseText, context: str) -> RoundResult: ...
 
@@ -295,16 +384,26 @@ class Narrator(Protocol):
     def intervene(self, premise: PremiseText, context: str, command: str, text: str) -> InterventionResult: ...
 
 
+# Models that accept the server-side refusal fallback.
+FALLBACK_MODELS = ("claude-fable-5-2", "claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5",
+                   "claude-sonnet-5-5")
+
+ONLY = "Fill in only the `{field}` part of your reply; every other part is null."
+
+
 class ClaudeNarrator:
     """Runs the passes on the Claude API."""
 
     def __init__(self, model: str, effort: str, api_key_env: str,
-                 usage_log: Callable[[dict], None] | None = None, cache_ttl: str = "1h"):
+                 usage_log: Callable[[dict], None] | None = None, cache_ttl: str = "1h",
+                 profile: Callable[[], aisettings.Profile] | None = None):
         self.model = model
         self.effort = effort
         self.cache_ttl = cache_ttl
         self.api_key_env = api_key_env
         self.usage_log = usage_log  # called with one record per API call, for `coose usage`
+        # Which model and effort each task uses; by default the same for all.
+        self.profile = profile or (lambda: aisettings.defaults(model, effort))
         self._client = None
 
     def _client_or_error(self):
@@ -316,30 +415,46 @@ class ClaudeNarrator:
         return self._client
 
     def _system(self, premise: PremiseText) -> list[dict]:
-        return [
+        cache = {"type": "ephemeral", "ttl": self.cache_ttl}
+        base, _, additions = premise.partition(ADDITIONS_MARK)
+        blocks = [
             {"type": "text", "text": CORE_RULES},
-            {"type": "text", "text": premise, "cache_control": {"type": "ephemeral", "ttl": self.cache_ttl}},
+            {"type": "text", "text": base, "cache_control": cache},
         ]
+        if additions:  # its own breakpoint: new lore rewrites only this part of the cache
+            blocks.append({"type": "text", "text": ADDITIONS_MARK.strip() + "\n\n" + additions,
+                           "cache_control": cache})
+        return blocks
 
-    def _call(self, label: str, premise: PremiseText, prompt: str, output_format=None):
+    @staticmethod
+    def _scene_block(scene_text: str) -> dict:
+        """The scene, cached briefly so the next passes of the same prompt read it cheaply."""
+        return {"type": "text", "text": scene_text, "cache_control": {"type": "ephemeral", "ttl": "5m"}}
+
+    def _call(self, label: str, task: str, premise: PremiseText, content: list[dict] | str, part: str):
+        """One API call. Returns the filled-in `part` of the shared output shape."""
         import anthropic
 
+        settings = self.profile().for_task(task)
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+        content = content + [{"type": "text", "text": ONLY.format(field=part)}]
         kwargs = dict(
-            model=self.model,
+            model=settings.model,
             max_tokens=16000,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
             system=self._system(premise),
-            output_config={"effort": self.effort},
-            messages=[{"role": "user", "content": prompt}],
+            output_config={"effort": settings.effort},
+            messages=[{"role": "user", "content": content}],
         )
+        thinking = aisettings.thinking_param(settings)
+        if thinking:
+            kwargs["thinking"] = thinking
+        if settings.model in FALLBACK_MODELS:
+            kwargs.update(betas=["server-side-fallback-2026-07-01"], fallbacks="default")
         started = time.monotonic()
         try:
             client = self._client_or_error()
-            if output_format is not None:
-                response = client.beta.messages.parse(output_format=output_format, **kwargs)
-            else:
-                response = client.beta.messages.create(**kwargs)
+            response = client.beta.messages.parse(output_format=NarratorOutput, **kwargs)
         except anthropic.AuthenticationError:
             raise NarratorError(f"the server's API key is missing or invalid (set {self.api_key_env})") from None
         except anthropic.RateLimitError:
@@ -350,25 +465,34 @@ class ClaudeNarrator:
             raise NarratorError("the server couldn't reach the AI service") from None
         except TypeError as e:  # e.g. no credentials configured at all
             raise NarratorError(f"the AI client isn't configured ({e})") from None
-        self._log_usage(label, response, time.monotonic() - started)
+        except ValueError:  # the reply didn't fit the schema
+            raise NarratorError("the narrator's reply couldn't be read") from None
+        self._log_usage(label, settings.model, response, time.monotonic() - started)
         if response.stop_reason == "refusal":
             raise NarratorError("the narrator declined to continue with that")
         if response.stop_reason == "max_tokens":
             raise NarratorError("the narrator's reply ran too long")
-        return response
+        output = response.parsed_output
+        result = getattr(output, part, None) if output is not None else None
+        if result is None:
+            raise NarratorError("the narrator's reply couldn't be read")
+        return result
 
-    def _log_usage(self, label: str, response, seconds: float) -> None:
+    def _log_usage(self, label: str, model: str, response, seconds: float) -> None:
         if self.usage_log is None:
             return
-        u = response.usage
         try:
+            u = response.usage
+            created = getattr(u, "cache_creation", None)
             self.usage_log({
                 "pass": label,
-                "model": getattr(response, "model", None) or self.model,
+                "model": getattr(response, "model", None) or model,
                 "input_tokens": u.input_tokens or 0,
                 "output_tokens": u.output_tokens or 0,
                 "cache_read_tokens": getattr(u, "cache_read_input_tokens", None) or 0,
                 "cache_write_tokens": getattr(u, "cache_creation_input_tokens", None) or 0,
+                "cache_write_1h_tokens": (getattr(created, "ephemeral_1h_input_tokens", None) or 0) if created
+                else None,
                 "seconds": round(seconds, 2),
                 "stop_reason": response.stop_reason,
                 "cache_ttl": self.cache_ttl,
@@ -378,48 +502,55 @@ class ClaudeNarrator:
 
     def action(self, premise: PremiseText, scene: Scene, text: str,
                existing: list[str] | None = None) -> AuthorResult:
-        scene_text = scene.render()
-        responder = self._call(
-            "responder",
-            premise,
-            f"{scene_text}\n\n# Action\n{scene.character.name} attempts:\n{text}\n\n"
-            "You are the Responder. Check the action against the Rulebook, the mechanics in the Premise, "
-            "and whether this character is capable of it right now. Decide the outcome and write an "
-            "objective draft of what actually happens.",
-            output_format=ResponderDraft,
-        ).parsed_output
-        if responder is None:
-            raise NarratorError("the narrator's reply couldn't be read")
-        author = self._call(
-            "author",
-            premise,
-            f"{scene_text}\n\n# Action\n{scene.character.name} attempts:\n{text}\n\n"
-            f"# Responder's judgement\nOutcome: {responder.outcome}\nReasoning: {responder.reasoning}\n"
-            f"Draft: {responder.draft}\n\n"
+        scene_block = self._scene_block(scene.render())
+        attempt = f"# Action\n{scene.character.name} attempts:\n{text}"
+        author_task = (
             "You are the Author. Decide the objective consequences of this action and write the narration "
             "the acting character's player will read. The narration must contain only what this character "
-            "perceives. Record what changed for the character, how much in-game time passed, and objective "
-            "notes for the working memory (including anyone who would have noticed).\n\n"
-            "# Existing characters (never add these as new characters)\n"
-            + ("\n".join(f"- {n}" for n in existing or []) or "(none)"),
-            output_format=AuthorResult,
-        ).parsed_output
-        if author is None:
-            raise NarratorError("the narrator's reply couldn't be read")
-        return author
-
-    def question(self, premise: PremiseText, scene: Scene, text: str) -> str:
-        response = self._call(
-            "question",
-            premise,
-            f"{scene.render()}\n\n# Question from {scene.character.name}'s player (out of character)\n{text}\n\n"
-            "Answer only with what this character knows, has experienced in their chatroom, or would "
-            "reasonably know as someone in their position. If they wouldn't know, say so plainly. Do not "
-            "reveal objective facts from the Premise, world state or working memory that they couldn't "
-            "know. Answer briefly, addressed to the player.",
+            "perceives, including what the people around them say and do in response. Record what changed for "
+            "the character, how much in-game time passed, who is with them now, anyone new who should become a "
+            "character, and objective notes for the working memory (including anyone who would have noticed)."
         )
-        answer = "".join(b.text for b in response.content if b.type == "text").strip()
-        if not answer:
+        if self.profile().action_passes == 1:
+            return self._call(
+                "action", "action", premise,
+                [scene_block, {"type": "text", "text": (
+                    f"{attempt}\n\nFirst judge the action as the Responder would: check it against the Rulebook, "
+                    "the mechanics in the Premise, and whether this character is capable of it right now, and "
+                    f"decide whether it succeeds, partly succeeds, fails or is impossible. Then: {author_task}")}],
+                "author",
+            )
+        responder = self._call(
+            "responder", "action", premise,
+            [scene_block, {"type": "text", "text": (
+                f"{attempt}\n\nYou are the Responder. Check the action against the Rulebook, the mechanics in the "
+                "Premise, and whether this character is capable of it right now. Decide the outcome and write an "
+                "objective draft of what actually happens.")}],
+            "responder",
+        )
+        return self._call(
+            "author", "action", premise,
+            [scene_block, {"type": "text", "text": (
+                f"{attempt}\n\n# Responder's judgement\nOutcome: {responder.outcome}\n"
+                f"Reasoning: {responder.reasoning}\nDraft: {responder.draft}\n\n{author_task}")}],
+            "author",
+        )
+
+    def question(self, premise: PremiseText, scene: Scene, text: str) -> QuestionAnswer:
+        answer = self._call(
+            "question", "question", premise,
+            [self._scene_block(scene.render()), {"type": "text", "text": (
+                f"# Question from {scene.character.name}'s player (out of character)\n{text}\n\n"
+                "Answer only with what this character knows, has experienced in their chatroom, or would "
+                "reasonably know as someone in their position. If they wouldn't know, say so plainly. Do not "
+                "reveal objective facts from the Premise, world state or working memory that they couldn't "
+                "know. Answer briefly, addressed to the player.\n\n"
+                "You can add people to the game's list of characters. If the player asks for someone their "
+                "character can perceive right now to be added (or asks why someone isn't listed), add them under "
+                "new_characters and say so in your answer. Never add anyone already listed under People.")}],
+            "answer",
+        )
+        if not answer.answer.strip():
             raise NarratorError("the narrator gave an empty answer")
         return answer
 
@@ -427,49 +558,30 @@ class ClaudeNarrator:
                   others: list[game.Character]) -> list[WitnessReport]:
         actor = scene.character
         response = self._call(
+            "witnesses", "witnesses", premise,
+            [self._scene_block(scene.render()), {"type": "text", "text": (
+                f"# Action\n{actor.name} attempted:\n{text}\n\n"
+                f"# What objectively happened\nTime taken: {result.minutes_elapsed} minutes\n"
+                f"{actor.name}'s location afterwards: {result.location or actor.location or 'unspecified'}\n"
+                "Notes: " + ("; ".join(result.memory_add) or "(none)") + "\n"
+                f"What {actor.name} perceived: {result.narration}\n\n"
+                f"# Candidate witnesses\n{describe_others(others)}\n\n"
+                "You are judging witnesses. Decide which of the candidate witnesses would realistically notice "
+                "any part of this action right now, by sight, sound or other senses, given where they are. Being "
+                "somewhere else usually means they notice nothing. For each witness, write what they perceive "
+                "from their own point of view and what they now know. Witnesses see behaviour, not thoughts: "
+                f"never reveal {actor.name}'s intentions, the wording of the attempt, or anything the witness "
+                "couldn't perceive. If they don't know who someone is, describe them instead of naming them. "
+                "Likewise never reveal anything about the actor's background, origin, past or profession that the "
+                "witness hasn't been told or seen for themselves; a description is only what they can see. If "
+                "the narration has a witness speak or act, that is what they did: tell them so in their report.")}],
             "witnesses",
-            premise,
-            f"{scene.render()}\n\n# Action\n{actor.name} attempted:\n{text}\n\n"
-            f"# What objectively happened\nTime taken: {result.minutes_elapsed} minutes\n"
-            f"{actor.name}'s location afterwards: {result.location or actor.location or 'unspecified'}\n"
-            "Notes: " + ("; ".join(result.memory_add) or "(none)") + "\n"
-            f"What {actor.name} perceived: {result.narration}\n\n"
-            f"# Other characters in the world\n{describe_others(others)}\n\n"
-            "You are judging witnesses. Decide which of the other characters would realistically notice any "
-            "part of this action right now, by sight, sound or other senses, given where they are. Being "
-            "somewhere else usually means they notice nothing. For each witness, write what they perceive "
-            "from their own point of view and what they now know. Witnesses see behaviour, not thoughts: "
-            f"never reveal {actor.name}'s intentions, the wording of the attempt, or anything the witness "
-            "couldn't perceive. If they don't know who someone is, describe them instead of naming them. "
-            "Likewise never reveal anything about the actor's background, origin, past or profession that the "
-            "witness hasn't been told or seen for themselves; a description is only what they can see.",
-            output_format=WitnessPass,
-        ).parsed_output
-        if response is None:
-            raise NarratorError("the narrator's reply couldn't be read")
+        )
         return response.reports
 
-    def reply_as(self, premise: PremiseText, scene: Scene, speaker: str, text: str, mode: str) -> str:
-        me = scene.character
-        response = self._call(
-            "reply",
-            premise,
-            f"{scene.render()}\n\n# Someone speaks to {me.name}\n{speaker} says to {me.name}: \"{text}\"\n\n"
-            f"{me.name}'s player is away, so you answer for {me.name}, in character and in their own voice, "
-            "consistent with their description, what they know and their recent chatroom. "
-            f"{ABSENT_INSTRUCTIONS.get(mode, ABSENT_INSTRUCTIONS['speak_only'])} Keep it short, like a real "
-            "reply in conversation. Write only the reply itself, with no quotation marks around it and no "
-            "narration.",
-        )
-        reply = "".join(b.text for b in response.content if b.type == "text").strip().strip('"').strip()
-        if not reply:
-            raise NarratorError("the narrator gave an empty reply")
-        return reply
-
     def round_change(self, premise: PremiseText, context: str) -> RoundResult:
-        result = self._call(
-            "round",
-            premise,
+        return self._call(
+            "round", "round", premise,
             f"{context}\n\n"
             "You are closing this round and opening the next. Reconcile everything that happened into the "
             "objective World State. Review the working memory and keep only what the next round still needs. "
@@ -477,25 +589,28 @@ class ClaudeNarrator:
             "noticed changing. Notices follow the governing rule: only what that character could perceive or "
             "already knows, and never details about other characters (names, origins, pasts) they haven't "
             "learned in play. Also write the Logbook entry for the round that ended.",
-            output_format=RoundResult,
-        ).parsed_output
-        if result is None:
-            raise NarratorError("the narrator's reply couldn't be read")
-        return result
+            "round",
+        )
 
     def backfill(self, premise: PremiseText, scene: Scene, minutes: int) -> BackfillResult:
-        result = self._call(
+        return self._call(
+            "backfill", "backfill", premise,
+            [self._scene_block(scene.render()), {"type": "text", "text": (
+                f"# Time away\n{scene.character.name}'s player was offline while "
+                f"{format_minutes(minutes)} passed in a time skip. The character was left untouched. Now that "
+                "their player is back, write a plausible backstory for that time, consistent with who they are, "
+                "where they were and the world state, and record what changed. Don't make big decisions for them.")}],
             "backfill",
-            premise,
-            f"{scene.render()}\n\n# Time away\n{scene.character.name}'s player was offline while "
-            f"{format_minutes(minutes)} passed in a time skip. The character was left untouched. Now that "
-            "their player is back, write a plausible backstory for that time, consistent with who they are, "
-            "where they were and the world state, and record what changed. Don't make big decisions for them.",
-            output_format=BackfillResult,
-        ).parsed_output
-        if result is None:
-            raise NarratorError("the narrator's reply couldn't be read")
-        return result
+        )
+
+    def intervene(self, premise: PremiseText, context: str, command: str, text: str) -> InterventionResult:
+        return self._call(
+            command, "admin", premise,
+            f"{context}\n\n# Story admin command (/{command})\n{text}\n\n{INTERVENTIONS[command]} Record every "
+            "objective change. Players only learn of it through their own characters' senses: write each affected "
+            "character a notice following the governing rule, and leave it empty if they wouldn't perceive it.",
+            "intervention",
+        )
 
 
 INTERVENTIONS = {
@@ -504,23 +619,6 @@ INTERVENTIONS = {
     "rewrite": "A story admin is rewriting a past event. Change the world so that the event happened as they "
     "describe instead, and adjust everything that follows from it.",
 }
-
-
-def _intervene(self, premise: PremiseText, context: str, command: str, text: str) -> InterventionResult:
-    result = self._call(
-        command,
-        premise,
-        f"{context}\n\n# Story admin command (/{command})\n{text}\n\n{INTERVENTIONS[command]} Record every "
-        "objective change. Players only learn of it through their own characters' senses: write each affected "
-        "character a notice following the governing rule, and leave it empty if they wouldn't perceive it.",
-        output_format=InterventionResult,
-    ).parsed_output
-    if result is None:
-        raise NarratorError("the narrator's reply couldn't be read")
-    return result
-
-
-ClaudeNarrator.intervene = _intervene
 
 
 def format_minutes(minutes: int) -> str:

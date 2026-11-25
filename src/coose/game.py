@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS characters (
 CREATE TABLE IF NOT EXISTS messages (
     id            INTEGER PRIMARY KEY,
     character_id  INTEGER NOT NULL REFERENCES characters(id),
-    kind          TEXT NOT NULL,   -- action | question | dialogue | narration | answer | system
+    kind          TEXT NOT NULL,   -- action | question | narration | answer | witness | round | system
     username      TEXT,            -- who sent it, for player prompts
     text          TEXT NOT NULL,
     world_minutes INTEGER NOT NULL,
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS world (
 MAX_NAME_LENGTH = 60
 MAX_DESCRIPTION_WORDS = 300
 MAX_STARTING_ITEMS = 4
-PLAYER_KINDS = ("action", "question", "dialogue")
+PLAYER_KINDS = ("action", "question")  # players speak through Actions
 ABSENT_MODES = ("speak_only", "act_within_reason", "freeze")
 SKIP_MODES = ("ai_plays", "backfill_on_return")
 
@@ -342,6 +342,23 @@ def characters_here(conn: sqlite3.Connection, character: Character) -> list[Char
         return []
     return [c for c in other_characters(conn, character.id)
             if c.location.strip().lower() == character.location.strip().lower()]
+
+
+def gather(conn: sqlite3.Connection, character: Character, names: list[str]) -> list[Character]:
+    """Put the named characters at `character`'s location, because the narrator says they are right there
+    with them. Locations are free text, so this is what makes "who is here" line up. Returns those moved."""
+    character = get_character(conn, character.id)
+    if character is None or not character.location.strip():
+        return []
+    wanted = {n.strip().lower() for n in names if n.strip()} - {character.name.lower()}
+    moved = []
+    with _write_lock:
+        for other in other_characters(conn, character.id):
+            if other.name.lower() in wanted and other.location != character.location:
+                with conn:
+                    conn.execute("UPDATE characters SET location = ? WHERE id = ?", (character.location, other.id))
+                moved.append(other)
+    return moved
 
 
 def pending_collectives(conn: sqlite3.Connection) -> list[Character]:

@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from coose import accounts, game, rounds, stories
-from coose.narrator import AuthorResult, BackfillResult, CharacterRoundUpdate, NarratorError, RoundResult
+from coose.narrator import AuthorResult, BackfillResult, CharacterRoundUpdate, NarratorError, QuestionAnswer, RoundResult
 from coose.web.app import create_app
 
 
@@ -139,14 +139,11 @@ class FakeNarrator:
 
     def question(self, premise, scene, text):
         self.calls.append("question")
-        return "Not sure."
+        return QuestionAnswer(answer="Not sure.", new_characters=[])
 
     def witnesses(self, premise, scene, text, result, others):
         self.calls.append("witnesses")
         return []
-
-    def reply_as(self, premise, scene, speaker, text, mode):
-        return "Hm."
 
     def round_change(self, premise, context):
         self.calls.append("round")
