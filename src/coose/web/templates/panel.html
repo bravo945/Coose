@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Owner panel · Coose{% endblock %}
+{% block content %}
+<div class="stack">
+    <h1>Owner panel</h1>
+    {% if message %}<p class="alert" role="status">{{ message }}</p>{% endif %}
+    {% if error %}<p class="alert alert--bad" role="alert">{{ error }}</p>{% endif %}
+
+    <section class="card stack">
+        <h2 class="card__title">Running story</h2>
+        {% if server.story %}
+        <p>{{ server.story }}: {% if server.paused %}paused{% else %}online{% endif %}</p>
+        <div class="cluster">
+            <form method="post" action="/pause"><button class="btn" type="submit" {% if server.paused %}disabled{% endif %}>Pause</button></form>
+            <form method="post" action="/resume"><button class="btn" type="submit" {% if not server.paused %}disabled{% endif %}>Resume</button></form>
+        </div>
+        {% else %}
+        <p>No story is running.</p>
+        {% endif %}
+    </section>
+
+    {% for r in rows %}
+    {% set s = r.story %}
+    <section class="card stack">
+        <h2 class="card__title">{{ s.display_name }} <small class="text-muted">({{ s.name }})</small></h2>
+        {% if not s.valid %}
+        <p class="alert alert--bad">Can't run: {{ s.problems | join("; ") }}</p>
+        {% else %}
+        <p>{{ r.cap }} · Schedule: {{ r.schedule or "none" }} · Story admins: {{ r.admins | join(", ") or "none" }}</p>
+        {% if server.story != s.name %}
+        <form method="post" action="/run"><input type="hidden" name="name" value="{{ s.name }}">
+            <button class="btn btn--solid" type="submit">Run this story</button></form>
+        {% endif %}
+        <form class="cluster" method="post" action="/cap"><input type="hidden" name="name" value="{{ s.name }}">
+            <label>More actions <input name="actions" size="5" inputmode="numeric"></label>
+            <label>More rounds <input name="rounds" size="5" inputmode="numeric"></label>
+            <button class="btn" type="submit">Set cap</button>
+            <button class="btn" type="submit" name="clear" value="1">Clear cap</button>
+        </form>
+        <form class="cluster" method="post" action="/schedule"><input type="hidden" name="name" value="{{ s.name }}">
+            <label>Days <input name="days" size="12" placeholder="fri,sat"></label>
+            <label>From <input name="start" size="5" placeholder="19:00"></label>
+            <label>To <input name="end" size="5" placeholder="23:00"></label>
+            <button class="btn" type="submit">Add opening hours</button>
+            <button class="btn" type="submit" name="clear" value="1">Clear schedule</button>
+        </form>
+        <form class="cluster" method="post" action="/admins"><input type="hidden" name="name" value="{{ s.name }}">
+            <label>Account <input name="username" size="14"></label>
+            <button class="btn" type="submit">Make story admin</button>
+            <button class="btn" type="submit" name="remove" value="1">Remove story admin</button>
+        </form>
+        {% endif %}
+    </section>
+    {% endfor %}
+
+    <section class="card stack">
+        <h2 class="card__title">Accounts</h2>
+        <p>{{ accounts | join(", ") or "No accounts yet." }}</p>
+        <form class="cluster" method="post" action="/accounts">
+            <label>Username <input name="username" size="14" required></label>
+            <label>Password <input name="password" type="password" size="14" autocomplete="new-password"></label>
+            <button class="btn" type="submit" name="do_what" value="add">Create</button>
+            <button class="btn" type="submit" name="do_what" value="password">Set password</button>
+            <button class="btn btn--danger" type="submit" name="do_what" value="remove">Remove</button>
+        </form>
+    </section>
+
+    <section class="card stack">
+        <h2 class="card__title">AI usage</h2>
+        <p>Estimated total: ${{ "%.2f" | format(total) }}</p>
+        <table>
+            <thead><tr><th>Pass</th><th>Calls</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Est. $</th></tr></thead>
+            <tbody>
+            {% for u in usage %}
+            <tr><td>{{ u.pass }}</td><td>{{ u.calls }}</td><td>{{ u.input }}</td><td>{{ u.output }}</td><td>{{ u.cache_read }}</td><td>{{ u.cache_write }}</td><td>{{ "?" if u.cost is none else "%.2f" | format(u.cost) }}</td></tr>
+            {% else %}
+            <tr><td colspan="7">No AI calls recorded yet.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </section>
+</div>
+{% endblock %}

@@ -40,6 +40,12 @@ Judge every action by realism inside this world and by the Rulebook. Outcomes ca
 partial success, failure with a consequence, or impossible; a failed or impossible action still \
 gets a reply that moves the story on rather than a flat refusal.
 
+A collective character is a group played as one character, such as a militia or a town. It can split \
+into parts in different places. Each part perceives only what is around it, and knowledge moves between \
+parts only by realistic means (a runner, a radio, a signal). Catch and refuse anything that relies on \
+unrealistic communication between parts. A collective dies only when its members are lost or reduced to \
+one individual.
+
 Write narration in the second person, present tense, addressed to the acting character. Keep it \
 vivid but tight: a few short paragraphs at most. Do not invent the player character's own words, \
 feelings or decisions beyond what the action states.
@@ -49,6 +55,24 @@ PremiseText = str
 
 
 # --- Structured outputs ------------------------------------------------------
+
+class Part(BaseModel):
+    name: str = Field(description="What this part of the collective is called, e.g. 'North patrol'.")
+    location: str = Field(description="Where this part is.")
+    members: str = Field(description="Who or how many are in it, briefly, e.g. '12 fighters'.")
+
+
+class LoreEntry(BaseModel):
+    title: str = Field(description="A short title for the piece of lore, e.g. 'Drastead gate procedure'.")
+    text: str = Field(description="The lore itself, objective and concise, in Markdown.")
+
+
+PARTS_FIELD = ("Only for a collective character: all of its parts after this, if they split, merge, move or "
+               "lose members. Empty for anyone else, or if nothing changed.")
+LORE_FIELD = ("Lasting facts about the world you invented that the Premise doesn't already state and that would "
+              "matter beyond this moment: places, groups, history, customs. Not events or character details. "
+              "Usually empty.")
+
 
 class ResponderDraft(BaseModel):
     outcome: Literal["success", "partial", "failure", "impossible"] = Field(
@@ -89,6 +113,7 @@ class AuthorResult(BaseModel):
         "can be spoken to and played. Leave empty for unnamed passers-by and for anyone listed under "
         "existing characters."
     )
+    parts: list[Part] = Field(default_factory=list, description=PARTS_FIELD)
 
 
 class WitnessReport(BaseModel):
@@ -117,6 +142,7 @@ class CharacterRoundUpdate(BaseModel):
     location: str = Field(description="Their location now, or empty if unchanged.")
     learned: list[str] = Field(description="New facts they now know, each a short sentence.")
     alive: bool = Field(description="False only if they died.")
+    parts: list[Part] = Field(default_factory=list, description=PARTS_FIELD)
 
 
 class RoundResult(BaseModel):
@@ -133,6 +159,7 @@ class RoundResult(BaseModel):
         "and anything now recorded in the World State or a character."
     )
     characters: list[CharacterRoundUpdate] = Field(description="One entry per living character listed.")
+    lore: list[LoreEntry] = Field(default_factory=list, description=LORE_FIELD)
 
 
 class BackfillResult(BaseModel):
@@ -157,6 +184,7 @@ class CharacterChange(BaseModel):
     inventory_remove: list[str] = Field(description="Items they lose, by exact name.")
     learned: list[str] = Field(description="New facts they now know, each a short sentence.")
     alive: bool = Field(description="False only if they are now dead.")
+    parts: list[Part] = Field(default_factory=list, description=PARTS_FIELD)
 
 
 class InterventionResult(BaseModel):
@@ -166,6 +194,7 @@ class InterventionResult(BaseModel):
     )
     memory_add: list[str] = Field(description="Objective notes for the working memory about the change.")
     characters: list[CharacterChange] = Field(description="Only the characters this changes.")
+    lore: list[LoreEntry] = Field(default_factory=list, description=LORE_FIELD)
 
 
 # --- Context ------------------------------------------------------------------
@@ -196,6 +225,8 @@ class Scene:
             f"Condition: {c.condition}",
             f"Inventory: {', '.join(c.inventory) or 'nothing'}",
             f"Description: {c.description}",
+            *([f"This is a collective character. Parts: {game.describe_parts(c.parts) or 'all together, as one body'}"]
+              if c.collective else []),
             "What they know:\n" + ("\n".join(f"- {k}" for k in c.knowledge) or "- nothing beyond their description"),
         ]
         if self.need_levels:
@@ -234,7 +265,8 @@ def describe_others(others: list[game.Character]) -> str:
     for o in others:
         words = o.description.split()
         short = " ".join(words[:60]) + (" ..." if len(words) > 60 else "")
-        lines.append(f"- {o.name} | location: {o.location or 'unspecified'} | condition: {o.condition} | {short}")
+        group = f" | collective, parts: {game.describe_parts(o.parts) or 'one body'}" if o.collective else ""
+        lines.append(f"- {o.name} | location: {o.location or 'unspecified'} | condition: {o.condition}{group} | {short}")
     return "\n".join(lines) or "(none)"
 
 

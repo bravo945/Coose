@@ -227,6 +227,8 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
                 counts=game.player_counts(sconn),
                 limit=settings.players_per_character,
                 can_create=settings.players_can_create,
+                waiting=[c for c in game.pending_collectives(sconn) if (c.owner or "").lower() == user.lower()],
+                notice=request.session.pop("notice", None),
                 error=request.session.pop("error", None),
             )
 
@@ -267,7 +269,8 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
                 return render(request, "offline.html")
             if not story.game_settings().players_can_create:
                 return to("/characters")
-            return render(request, "character_new.html", story=story, error=None, form={})
+            return render(request, "character_new.html", story=story, error=None, form={},
+                          collectives=story.game_settings().collectives)
 
     @app.post("/characters/new", response_class=HTMLResponse)
     def new_character(
@@ -280,6 +283,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
         item3: str = Form(""),
         item4: str = Form(""),
         visibility: str = Form("public"),
+        collective: bool = Form(False),
     ):
         user = current_user(request)
         if not user:
@@ -291,17 +295,22 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             if not settings.players_can_create:
                 return to("/characters")
             form = dict(name=name, description=description, location=location,
-                        items=[item1, item2, item3, item4], visibility=visibility)
+                        items=[item1, item2, item3, item4], visibility=visibility, collective=collective)
             try:
                 if game.current_character(sconn, user) is not None:
                     raise game.GameError("Leave your current character first.")
                 character = game.create_character(
                     sconn, settings, name=name, description=description, location=location,
-                    items=form["items"], visibility=visibility, owner=user,
+                    items=form["items"], visibility=visibility, owner=user, collective=collective,
                 )
+                if character.pending:
+                    request.session["notice"] = (f"{character.name} is waiting for a story admin to approve it "
+                                                 "as a collective character.")
+                    return to("/characters")
                 game.join(sconn, settings, user, character.id)
             except game.GameError as e:
-                return render(request, "character_new.html", status_code=400, story=story, error=str(e), form=form)
+                return render(request, "character_new.html", status_code=400, story=story, error=str(e), form=form,
+                              collectives=settings.collectives)
         return to("/")
 
     @app.post("/prompt")
@@ -592,13 +601,14 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
                 return to("/")
             settings = story.game_settings()
             counts = game.player_counts(sconn)
-            characters = [game.Character.from_row(r) for r in
-                          sconn.execute("SELECT * FROM characters ORDER BY alive DESC, name COLLATE NOCASE")]
+            characters = [game.Character.from_row(r) for r in sconn.execute(
+                "SELECT * FROM characters WHERE pending = 0 ORDER BY alive DESC, name COLLATE NOCASE")]
             return render(
                 request, "admin.html", story=story, log=admin.recent(sconn), characters=characters,
                 counts=counts, online=hub.online_characters(story.name),
                 world_time=game.world_time(sconn, settings), round_number=rounds.current_round(sconn),
                 cap=controls.describe_cap(conn(), story), lore=admin.pending_lore(story.path),
+                waiting=game.pending_collectives(sconn),
                 removed=game.removed_players(sconn), help=admin.HELP,
             )
 
@@ -639,7 +649,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             online = hub.online_characters(story.name)
             context = rounds.round_context(sconn, story.game_settings(), story.display_name, online)
             outcome = narrator.intervene(load_premise(story.path), context, command, text)
-            result.notify = admin.apply_intervention(sconn, outcome)
+            result.notify = admin.apply_intervention(sconn, outcome, story.path)
             reply = outcome.reply
         if result.notify_all:
             hub.notify_story(story.name)

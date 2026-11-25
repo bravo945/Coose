@@ -345,5 +345,24 @@ def serve() -> None:
     uvicorn.run(create_app(cfg, run_scheduler=True), host=cfg.host, port=cfg.port, proxy_headers=True)
 
 
+@app.command("panel")
+def panel() -> None:
+    """Start the owner's private control panel. Bind it to your Tailscale address, never the public site."""
+    import uvicorn
+
+    from .web.panel import create_panel
+
+    cfg = _cfg()
+    password = cfg.panel_password()
+    if not password:
+        _fail(f"Set the {cfg.panel_password_env} environment variable to the panel's password first.")
+    if cfg.panel_host in ("0.0.0.0", "::", ""):
+        _fail("The panel must not listen on every network. Set [panel] host to your Tailscale address "
+              "(see `tailscale ip -4`) or 127.0.0.1.")
+    if (cfg.panel_host, cfg.panel_port) == (cfg.host, cfg.port):
+        _fail("The panel needs a different port from the public site.")
+    uvicorn.run(create_panel(cfg, password), host=cfg.panel_host, port=cfg.panel_port)
+
+
 if __name__ == "__main__":
     app()

@@ -27,7 +27,10 @@ CREATE TABLE IF NOT EXISTS characters (
     visibility    TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public', 'locked')),
     owner         TEXT,                          -- username, or NULL for AI-created characters
     shared_with   TEXT NOT NULL DEFAULT '[]',   -- JSON list of usernames (locked characters)
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    collective    INTEGER NOT NULL DEFAULT 0,    -- a group played as one character
+    pending       INTEGER NOT NULL DEFAULT 0,    -- waiting for a story admin's approval
+    parts         TEXT NOT NULL DEFAULT '[]'     -- JSON list of {name, location, members} for a collective
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -66,6 +69,26 @@ class GameError(ValueError):
     pass
 
 
+# Columns added after a story's database may already exist.
+LATER_COLUMNS = {
+    "characters": [
+        ("collective", "INTEGER NOT NULL DEFAULT 0"),
+        ("pending", "INTEGER NOT NULL DEFAULT 0"),
+        ("parts", "TEXT NOT NULL DEFAULT '[]'"),
+    ],
+}
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Bring an older story database (or a restored snapshot) up to the current columns."""
+    for table, columns in LATER_COLUMNS.items():
+        have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, definition in columns:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    conn.commit()
+
+
 # --- Settings ---------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -76,6 +99,7 @@ class Settings:
     players_can_create: bool
     players_per_character: int
     tracked_needs: dict[str, float]  # need -> hours until it runs out
+    collectives: bool = True
     ai_characters_public: bool = True
     absent_characters: str = "speak_only"
     actions_per_round: int = 5
@@ -99,6 +123,7 @@ class Settings:
             players_per_character=max(1, int(raw.get("players_per_character", 3))),
             tracked_needs={str(k): float(v) for k, v in needs.items()},
             ai_characters_public=bool(raw.get("ai_characters_public", True)),
+            collectives=bool(raw.get("collectives", True)),
             absent_characters=_one_of("absent_characters", raw.get("absent_characters", "speak_only"),
                                       ABSENT_MODES),
             actions_per_round=max(1, int(raw.get("actions_per_round", 5))),
@@ -204,6 +229,9 @@ class Character:
     visibility: str
     owner: str | None
     shared_with: list[str] = field(default_factory=list)
+    collective: bool = False
+    pending: bool = False
+    parts: list[dict] = field(default_factory=list)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Character":
@@ -220,10 +248,13 @@ class Character:
             visibility=row["visibility"],
             owner=row["owner"],
             shared_with=json.loads(row["shared_with"]),
+            collective=bool(row["collective"]),
+            pending=bool(row["pending"]),
+            parts=json.loads(row["parts"]),
         )
 
     def can_be_played_by(self, username: str) -> bool:
-        if not self.alive:
+        if not self.alive or self.pending:
             return False
         if self.visibility == "public":
             return True
@@ -246,6 +277,7 @@ def create_character(
     items: list[str],
     visibility: str,
     owner: str | None,
+    collective: bool = False,
 ) -> Character:
     name = " ".join(name.split())
     description = description.strip()
@@ -262,13 +294,16 @@ def create_character(
         raise GameError(f"Characters can start with at most {MAX_STARTING_ITEMS} items.")
     if visibility not in ("public", "locked"):
         raise GameError("Visibility must be public or locked.")
+    if collective and not settings.collectives:
+        raise GameError("This story doesn't allow collective characters.")
     needs = {n: clock_minutes(conn) for n in settings.tracked_needs}
     try:
         with conn:
             cur = conn.execute(
-                "INSERT INTO characters (name, description, location, inventory, needs, visibility, owner) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (name, description, location.strip(), json.dumps(items), json.dumps(needs), visibility, owner),
+                "INSERT INTO characters (name, description, location, inventory, needs, visibility, owner, "
+                "collective, pending) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, description, location.strip(), json.dumps(items), json.dumps(needs), visibility, owner,
+                 int(collective), int(collective)),
             )
     except sqlite3.IntegrityError:
         raise GameError(f"A character named '{name}' already exists.") from None
@@ -295,7 +330,8 @@ def find_character_by_name(conn: sqlite3.Connection, name: str) -> Character | N
 def other_characters(conn: sqlite3.Connection, character_id: int) -> list[Character]:
     """Every living character except this one: the candidates for witnessing."""
     rows = conn.execute(
-        "SELECT * FROM characters WHERE alive = 1 AND id != ? ORDER BY name COLLATE NOCASE", (character_id,)
+        "SELECT * FROM characters WHERE alive = 1 AND pending = 0 AND id != ? ORDER BY name COLLATE NOCASE",
+        (character_id,)
     )
     return [Character.from_row(r) for r in rows]
 
@@ -306,6 +342,27 @@ def characters_here(conn: sqlite3.Connection, character: Character) -> list[Char
         return []
     return [c for c in other_characters(conn, character.id)
             if c.location.strip().lower() == character.location.strip().lower()]
+
+
+def pending_collectives(conn: sqlite3.Connection) -> list[Character]:
+    rows = conn.execute("SELECT * FROM characters WHERE pending = 1 ORDER BY id")
+    return [Character.from_row(r) for r in rows]
+
+
+def decide_collective(conn: sqlite3.Connection, name: str, approve: bool) -> Character | None:
+    """Approve a requested collective into the story, or delete the request. None if there's no such request."""
+    row = conn.execute("SELECT * FROM characters WHERE pending = 1 AND name = ?", (name.strip(),)).fetchone()
+    if row is None:
+        return None
+    character = Character.from_row(row)
+    with conn:
+        if approve:
+            conn.execute("UPDATE characters SET pending = 0 WHERE id = ?", (character.id,))
+        else:
+            conn.execute("DELETE FROM messages WHERE character_id = ?", (character.id,))
+            conn.execute("DELETE FROM players WHERE character_id = ?", (character.id,))
+            conn.execute("DELETE FROM characters WHERE id = ?", (character.id,))
+    return character
 
 
 def players_of(conn: sqlite3.Connection, character_id: int) -> list[str]:
@@ -409,6 +466,7 @@ class ActionOutcome:
     needs_met: list[str] = field(default_factory=list)
     alive: bool = True
     memory_add: list[str] = field(default_factory=list)
+    parts: list[dict] = field(default_factory=list)  # a collective's parts afterwards; empty if unchanged
 
 
 # Read-modify-write of shared rows (clock, working memory, knowledge) happens
@@ -444,7 +502,7 @@ def apply_action(conn: sqlite3.Connection, character: Character, outcome: Action
                 _set(conn, "total_actions", str(total_actions(conn) + 1))
             conn.execute(
                 "UPDATE characters SET location = ?, condition = ?, inventory = ?, knowledge = ?, needs = ?, "
-                "alive = ? WHERE id = ?",
+                "alive = ?, parts = ? WHERE id = ?",
                 (
                     outcome.location.strip() or character.location,
                     outcome.condition.strip() or character.condition,
@@ -452,10 +510,28 @@ def apply_action(conn: sqlite3.Connection, character: Character, outcome: Action
                     json.dumps(knowledge),
                     json.dumps(needs),
                     int(bool(outcome.alive)),
+                    json.dumps(clean_parts(outcome.parts) if character.collective and outcome.parts
+                               else character.parts),
                     character.id,
                 ),
             )
     return get_character(conn, character.id)
+
+
+def clean_parts(parts: list) -> list[dict]:
+    """A collective's parts as plain dicts, from the AI's models or dicts."""
+    result = []
+    for p in parts:
+        p = p if isinstance(p, dict) else p.model_dump()
+        name = str(p.get("name", "")).strip()
+        if name:
+            result.append({"name": name, "location": str(p.get("location", "")).strip(),
+                           "members": str(p.get("members", "")).strip()})
+    return result
+
+
+def describe_parts(parts: list[dict]) -> str:
+    return "; ".join(f"{p['name']} ({p.get('members') or '?'}) at {p.get('location') or '?'}" for p in parts)
 
 
 def add_knowledge(conn: sqlite3.Connection, character_id: int, facts: list[str]) -> None:

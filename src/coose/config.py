@@ -21,10 +21,16 @@ class Config:
     model: str = "claude-opus-5-5"
     effort: str = "medium"
     cache_ttl: str = "1h"
+    panel_host: str = "127.0.0.1"
+    panel_port: int = 8001
+    panel_password_env: str = "COOSE_PANEL_PASSWORD"
 
     @property
     def server_db_path(self) -> Path:
         return self.data_dir / "server.db"
+
+    def panel_password(self) -> str | None:
+        return os.environ.get(self.panel_password_env) or None
 
     def secret_key(self) -> str | None:
         return os.environ.get(self.secret_key_env) or None
@@ -40,6 +46,7 @@ class Config:
         base = path.resolve().parent
         server = raw.get("server", {})
         ai = raw.get("ai", {})
+        panel = raw.get("panel", {})
         return cls(
             host=server.get("host", "127.0.0.1"),
             port=int(server.get("port", 8000)),
@@ -50,6 +57,9 @@ class Config:
             model=ai.get("model", "claude-opus-5-5"),
             effort=ai.get("effort", "medium"),
             cache_ttl=_cache_ttl(ai.get("cache_ttl", "1h")),
+            panel_host=panel.get("host", "127.0.0.1"),
+            panel_port=int(panel.get("port", 8001)),
+            panel_password_env=panel.get("password_env", "COOSE_PANEL_PASSWORD"),
         )
 
 

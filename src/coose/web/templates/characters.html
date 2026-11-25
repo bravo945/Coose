@@ -4,6 +4,8 @@
 <div class="stack">
     <h1>Choose a character</h1>
     {% if error %}<p class="alert alert--bad" role="alert">{{ error }}</p>{% endif %}
+    {% if notice %}<p class="alert" role="status">{{ notice }}</p>{% endif %}
+    {% for c in waiting %}<p class="text-muted">{{ c.name }} is waiting for a story admin's approval.</p>{% endfor %}
     {% if characters %}
     <div class="grid">
         {% for c in characters %}
@@ -13,6 +15,7 @@
             <p class="cluster">
                 {% if c.visibility == "locked" %}<span class="badge">Locked</span>{% endif %}
                 {% if not c.owner %}<span class="badge badge--info">Story character</span>{% endif %}
+                {% if c.collective %}<span class="badge">Collective</span>{% endif %}
                 <small>{{ n }} of {{ limit }} playing</small>
             </p>
             <p>{{ c.description | truncate(220) }}</p>
