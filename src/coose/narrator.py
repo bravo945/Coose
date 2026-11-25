@@ -12,9 +12,11 @@ one pass over the whole world (see rounds.py), and a character returning
 after a skip they sat out gets a backstory pass.
 
 Cost: the story's Premise and Rulebook go first in every request as a cached
-system prompt, and every pass shares one output schema so they all share
-that one cache (structured-output schemas are part of the cached prefix, so
-a schema per pass meant a cache per pass). Lore the AI adds goes after the
+system prompt, and every pass replies in one shared JSON shape whose schema
+is written into that system prompt, so they all share that one cache.
+(Structured-output schemas are part of the cached prefix, so a schema per
+pass meant a cache per pass, and one schema for everything is too large for
+the API to compile.) Lore the AI adds goes after the
 Premise behind its own cache breakpoint, so a new addition doesn't rewrite
 the whole Premise. The scene (character, chat, world state) is cached for a
 few minutes too, so the Author and witness passes read it instead of paying
@@ -24,6 +26,7 @@ the story's AI settings (aisettings.py).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -32,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from . import aisettings, game
 
@@ -236,17 +239,44 @@ class QuestionAnswer(BaseModel):
 class NarratorOutput(BaseModel):
     """Every pass answers with this one shape and fills in only its own part.
 
-    One shared schema keeps one shared prompt cache: the schema is part of
-    the cached prefix, so a different schema per pass meant paying a full
-    cache write of the Premise for every kind of pass."""
+    One shared shape keeps one shared prompt cache: its schema is written
+    once into the cached system prompt (OUTPUT_RULES), the same for every
+    pass. Per-pass structured-output schemas each meant their own cache."""
 
-    responder: ResponderDraft | None = Field(description="Only for the Responder pass.")
-    author: AuthorResult | None = Field(description="Only for the Author pass.")
-    witnesses: WitnessPass | None = Field(description="Only for the witness pass.")
-    answer: QuestionAnswer | None = Field(description="Only for a Question.")
-    round: RoundResult | None = Field(description="Only for a round change.")
-    backfill: BackfillResult | None = Field(description="Only for a backstory after a skip.")
-    intervention: InterventionResult | None = Field(description="Only for a story admin command.")
+    responder: ResponderDraft | None = Field(default=None, description="Only for the Responder pass.")
+    author: AuthorResult | None = Field(default=None, description="Only for the Author pass.")
+    witnesses: WitnessPass | None = Field(default=None, description="Only for the witness pass.")
+    answer: QuestionAnswer | None = Field(default=None, description="Only for a Question.")
+    round: RoundResult | None = Field(default=None, description="Only for a round change.")
+    backfill: BackfillResult | None = Field(default=None, description="Only for a backstory after a skip.")
+    intervention: InterventionResult | None = Field(default=None, description="Only for a story admin command.")
+
+
+def _compact_schema() -> str:
+    def strip(node):
+        if isinstance(node, dict):
+            return {k: strip(v) for k, v in node.items() if k != "title"}
+        if isinstance(node, list):
+            return [strip(v) for v in node]
+        return node
+    return json.dumps(strip(NarratorOutput.model_json_schema()), separators=(",", ":"))
+
+
+OUTPUT_RULES = (
+    "\n\n# How to reply\nEvery reply is one JSON object and nothing else: no Markdown fences, no text before or "
+    "after it. It follows this JSON Schema. Each request names the one part to fill in; leave every other part "
+    "null. Give every field of that part, using empty strings or empty lists where nothing applies.\n"
+    + _compact_schema() + "\n"
+)
+
+
+def read_output(text: str) -> NarratorOutput:
+    """The JSON object in a reply, read against the shared shape."""
+    text = (text or "").strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("there is no JSON object in the reply")
+    return NarratorOutput.model_validate_json(text[start:end + 1])
 
 
 # --- Context ------------------------------------------------------------------
@@ -421,7 +451,7 @@ class ClaudeNarrator:
         cache = {"type": "ephemeral", "ttl": self.cache_ttl}
         base, _, additions = premise.partition(ADDITIONS_MARK)
         blocks = [
-            {"type": "text", "text": CORE_RULES},
+            {"type": "text", "text": CORE_RULES + OUTPUT_RULES},
             {"type": "text", "text": base, "cache_control": cache},
         ]
         if additions:  # its own breakpoint: new lore rewrites only this part of the cache
@@ -435,19 +465,43 @@ class ClaudeNarrator:
         return {"type": "text", "text": scene_text, "cache_control": {"type": "ephemeral", "ttl": "5m"}}
 
     def _call(self, label: str, task: str, premise: PremiseText, content: list[dict] | str, part: str):
-        """One API call. Returns the filled-in `part` of the shared output shape."""
+        """One pass. Returns the filled-in `part` of the shared output shape.
+
+        The reply is JSON read against NarratorOutput. The API's strict
+        structured outputs can't compile a schema this size, and a smaller
+        schema per pass would mean a cache per pass again, so the schema is
+        written once into the cached system prompt instead. A reply that
+        doesn't parse gets one retry with the error shown to the model."""
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+        messages = [{"role": "user", "content": content + [{"type": "text", "text": ONLY.format(field=part)}]}]
+        for attempt in (1, 2):
+            text = self._request(label, task, premise, messages)
+            try:
+                result = getattr(read_output(text), part, None)
+                if result is None:
+                    raise ValueError(f"the `{part}` part is missing or null")
+                return result
+            except (ValueError, ValidationError) as e:
+                log.warning("Unreadable %s reply (attempt %d): %s", label, attempt, str(e)[:300])
+                messages = messages + [
+                    {"role": "assistant", "content": text or "(empty)"},
+                    {"role": "user", "content": f"That reply couldn't be read: {str(e)[:500]}\n\nReply again with "
+                     f"only the JSON object, the `{part}` part filled in exactly as the schema says."},
+                ]
+        raise NarratorError("the narrator's reply couldn't be read")
+
+    def _request(self, label: str, task: str, premise: PremiseText, messages: list[dict]) -> str:
+        """Send one request and return the reply's text."""
         import anthropic
 
         settings = self.profile().for_task(task)
-        if isinstance(content, str):
-            content = [{"type": "text", "text": content}]
-        content = content + [{"type": "text", "text": ONLY.format(field=part)}]
         kwargs = dict(
             model=settings.model,
             max_tokens=16000,
             system=self._system(premise),
             output_config={"effort": settings.effort},
-            messages=[{"role": "user", "content": content}],
+            messages=messages,
         )
         thinking = aisettings.thinking_param(settings)
         if thinking:
@@ -457,7 +511,7 @@ class ClaudeNarrator:
         started = time.monotonic()
         try:
             client = self._client_or_error()
-            response = client.beta.messages.parse(output_format=NarratorOutput, **kwargs)
+            response = client.beta.messages.create(**kwargs)
         except anthropic.AuthenticationError:
             raise NarratorError(f"the server's API key is missing or invalid (set {self.api_key_env})") from None
         except anthropic.RateLimitError:
@@ -474,18 +528,12 @@ class ClaudeNarrator:
             raise NarratorError("the server couldn't reach the AI service") from None
         except TypeError as e:  # e.g. no credentials configured at all
             raise NarratorError(f"the AI client isn't configured ({e})") from None
-        except ValueError:  # the reply didn't fit the schema
-            raise NarratorError("the narrator's reply couldn't be read") from None
         self._log_usage(label, settings.model, response, time.monotonic() - started)
         if response.stop_reason == "refusal":
             raise NarratorError("the narrator declined to continue with that")
         if response.stop_reason == "max_tokens":
             raise NarratorError("the narrator's reply ran too long")
-        output = response.parsed_output
-        result = getattr(output, part, None) if output is not None else None
-        if result is None:
-            raise NarratorError("the narrator's reply couldn't be read")
-        return result
+        return "".join(b.text for b in response.content if getattr(b, "type", "") == "text")
 
     def _log_usage(self, label: str, model: str, response, seconds: float) -> None:
         if self.usage_log is None:

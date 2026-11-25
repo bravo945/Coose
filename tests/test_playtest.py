@@ -152,7 +152,8 @@ def test_every_pass_shares_one_cached_prefix():
     n.question(premise, scene(), "Who is here?")
     assert result.narration == "You knock."
     assert [r["system"] for r in sent[1:]] == [sent[0]["system"]] * 2
-    assert [r["output_config"]["format"] for r in sent[1:]] == [sent[0]["output_config"]["format"]] * 2
+    assert all("format" not in r["output_config"] for r in sent)  # too large for the API to compile
+    assert '"author"' in sent[0]["system"][0]["text"]  # the shared schema, inside the cached prefix
     system = sent[0]["system"]
     assert system[1]["cache_control"]["ttl"] == "1h" and "A world." in system[1]["text"]
     assert "New." not in system[1]["text"] and "New." in system[2]["text"]  # lore cached apart
@@ -196,3 +197,23 @@ def test_a_refused_request_says_why(caplog):
         n.question("P", scene(), "Who?")
     assert "something this model doesn't accept" in str(e.value) and "claude-opus-5-5" in str(e.value)
     assert "something this model doesn't accept" in caplog.text
+
+
+def test_an_unreadable_reply_gets_one_retry():
+    import anthropic
+
+    sent, replies = [], ["Sure! Here you go: {not json", json.dumps({"answer": {"answer": "No.", "new_characters": []}})]
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        return httpx2.Response(200, json={
+            "id": "m", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+            "content": [{"type": "text", "text": replies[len(sent) - 1]}], "stop_reason": "end_turn",
+            "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1}})
+
+    n = ClaudeNarrator("claude-opus-5-5", "medium", "NONE")
+    n._client = anthropic.Anthropic(api_key="k", http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+    assert n.question("P", scene(), "Who?").answer == "No."
+    retry = sent[1]["messages"]
+    assert retry[1] == {"role": "assistant", "content": "Sure! Here you go: {not json"}
+    assert "couldn't be read" in retry[2]["content"] and sent[1]["system"] == sent[0]["system"]
