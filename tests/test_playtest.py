@@ -80,3 +80,16 @@ def test_api_usage_is_recorded_and_summarised(config, conn):
     db.log_usage(conn, "demo", records[0])
     out = CliRunner().invoke(cli, ["--config", str(config.data_dir.parent / "coose.toml"), "usage"]).output
     assert "question" in out and "9000" in out
+    # 120 input at $4, 30 output at $20, 9000 cache reads at $0.20 per million tokens
+    assert records[0]["cache_ttl"] == "1h"
+    assert "Estimated total: $0.00" in out
+    row = conn.execute("SELECT cost_usd FROM ai_usage").fetchone()
+    assert abs(row["cost_usd"] - (120 * 4 + 30 * 20 + 9000 * 0.2) / 1e6) < 1e-9
+
+
+def test_cost_estimates():
+    from coose import pricing
+
+    assert pricing.estimate("claude-opus-5-5", 0, 0, 0, 1_000_000, "5m") == 5.0
+    assert pricing.estimate("claude-opus-5-5", 0, 0, 0, 1_000_000, "1h") == 8.0
+    assert pricing.estimate("some-future-model", 1, 1, 1, 1) is None

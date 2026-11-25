@@ -149,6 +149,37 @@ def world_time(conn: sqlite3.Connection, settings: Settings) -> datetime:
     return settings.start_time + timedelta(minutes=clock_minutes(conn))
 
 
+def total_actions(conn: sqlite3.Connection) -> int:
+    """Player Actions over the story's whole life, for caps."""
+    return int(_get(conn, "total_actions", "0"))
+
+
+def set_clock(conn: sqlite3.Connection, minutes: int) -> None:
+    with _write_lock:
+        with conn:
+            _set(conn, "clock_minutes", str(max(0, int(minutes))))
+
+
+def set_world_state(conn: sqlite3.Connection, text: str) -> None:
+    with conn:
+        _set(conn, "world_state", text)
+
+
+def removed_players(conn: sqlite3.Connection) -> list[str]:
+    """Accounts a story admin has removed from this story."""
+    return json.loads(_get(conn, "removed_players", "[]"))
+
+
+def set_removed(conn: sqlite3.Connection, username: str, removed: bool) -> None:
+    names = [n for n in removed_players(conn) if n.lower() != username.lower()]
+    if removed:
+        names.append(username)
+    with conn:
+        _set(conn, "removed_players", json.dumps(names))
+    if removed:
+        leave(conn, username)
+
+
 def world_state(conn: sqlite3.Connection) -> str:
     return _get(conn, "world_state", "") or ""
 
@@ -299,6 +330,8 @@ def current_character(conn: sqlite3.Connection, username: str) -> Character | No
 
 def join(conn: sqlite3.Connection, settings: Settings, username: str, character_id: int) -> Character:
     """Start playing a character. A player plays one character at a time."""
+    if username.lower() in {n.lower() for n in removed_players(conn)}:
+        raise GameError("A story admin has removed you from this story.")
     character = get_character(conn, character_id)
     if character is None or not character.can_be_played_by(username):
         raise GameError("You can't play that character.")
@@ -408,6 +441,7 @@ def apply_action(conn: sqlite3.Connection, character: Character, outcome: Action
             _set(conn, "working_memory", json.dumps(memory))
             if count:
                 _set(conn, "round_actions", str(int(_get(conn, "round_actions", "0")) + 1))
+                _set(conn, "total_actions", str(total_actions(conn) + 1))
             conn.execute(
                 "UPDATE characters SET location = ?, condition = ?, inventory = ?, knowledge = ?, needs = ?, "
                 "alive = ? WHERE id = ?",

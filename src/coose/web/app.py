@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import secrets
+import time
+from datetime import datetime
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -17,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from .. import accounts, db, game, rounds, stories
+from .. import accounts, admin, controls, db, game, rounds, stories
 from ..config import Config
 from ..narrator import AuthorResult, ClaudeNarrator, Narrator, NarratorError, Scene, format_minutes, load_premise
 from .live import Hub
@@ -29,7 +31,8 @@ SESSION_MAX_AGE = 60 * 60 * 24 * 14  # two weeks
 MAX_PROMPT_CHARS = 4000
 
 
-def create_app(config: Config, secret_key: str | None = None, narrator: Narrator | None = None) -> FastAPI:
+def create_app(config: Config, secret_key: str | None = None, narrator: Narrator | None = None,
+               run_scheduler: bool = False) -> FastAPI:
     app = FastAPI(title="Coose", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(
         SessionMiddleware,
@@ -48,7 +51,8 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
         finally:
             c.close()
 
-    narrator = narrator or ClaudeNarrator(config.model, config.effort, config.api_key_env, usage_log=record_usage)
+    narrator = narrator or ClaudeNarrator(config.model, config.effort, config.api_key_env, usage_log=record_usage,
+                                           cache_ttl=config.cache_ttl)
     hub = app.state.hub = Hub()
     round_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)  # one round change at a time
 
@@ -63,12 +67,32 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
         return user
 
     def render(request: Request, name: str, status_code: int = 200, **context):
+        user = current_user(request)
+        st = stories.status(conn())
         return templates.TemplateResponse(
             request,
             name,
-            {"user": current_user(request), "server": stories.status(conn()), **context},
+            {"user": user, "server": st, "story_admin": admin_of(st.story, user), **context},
             status_code=status_code,
         )
+
+    def admin_of(story_name: str | None, user: str | None) -> bool:
+        if not story_name or not user:
+            return False
+        try:
+            return controls.is_admin(conn(), stories.find_story(config.stories_dir, story_name), user)
+        except stories.StoryError:
+            return False
+
+    def enforce_cap(story_name: str, sconn) -> None:
+        """Pause the story once it reaches the owner's cap. Prompts already running still finish."""
+        c = conn()
+        st = stories.status(c)
+        if st.story == story_name and st.online and controls.cap_reached(c, story_name, sconn):
+            tell_online(story_name, sconn, "This story has reached the limit its owner set and is pausing now. "
+                        "Everything is saved.")
+            stories.pause(c)
+            hub.notify_story(story_name)
 
     @contextmanager
     def running_story():
@@ -383,6 +407,15 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
             background.add_task(judge_witnesses, story.name, scene, text, result, [o.id for o in others], premise)
         if skip_now or rounds.round_due(sconn, settings):
             background.add_task(change_round, story.name)
+        background.add_task(enforce_cap_by_name, story.name)
+
+    def enforce_cap_by_name(story_name: str) -> None:
+        story = stories.find_story(config.stories_dir, story_name)
+        sconn = stories.open_story_db(story)
+        try:
+            enforce_cap(story_name, sconn)
+        finally:
+            sconn.close()
 
     def change_round(story_name: str) -> None:
         """Close the round: one AI pass over the whole world, then Logbook, notices and a snapshot."""
@@ -409,6 +442,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
                 )
                 rounds.apply_round(sconn, story.path, settings, outcome, online)
                 hub.notify_story(story_name)
+                enforce_cap(story_name, sconn)
             finally:
                 sconn.close()
         finally:
@@ -522,6 +556,7 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
                 game.add_message(sconn, speaker.id, "system", f"{t.name} didn't answer: {narrator_failed(e)}")
                 continue
             game.add_message(sconn, speaker.id, "heard", f'{t.name} says: "{reply}"')
+            game.add_memory(sconn, [f'{t.name} (player away) answered {speaker.name}: "{reply[:300]}"'])
             for o in targets:
                 if o.id != t.id:
                     game.add_message(sconn, o.id, "heard", f'{t.name} says: "{reply}"')
@@ -530,6 +565,109 @@ def create_app(config: Config, secret_key: str | None = None, narrator: Narrator
                                  f'You were away, so the narrator answered {speaker.name} for you: "{reply}"')
             hub.notify(story.name, [speaker.id] + [o.id for o in targets])
         return None
+
+    # --- Story admins -----------------------------------------------------
+
+    @contextmanager
+    def admin_story(user: str | None):
+        """The running story (online or paused) and its database, if `user` is one of its admins."""
+        st = stories.status(conn())
+        if not st.story or not admin_of(st.story, user):
+            yield None, None
+            return
+        story = stories.find_story(config.stories_dir, st.story)
+        sconn = stories.open_story_db(story)
+        try:
+            yield story, sconn
+        finally:
+            sconn.close()
+
+    @app.get("/admin", response_class=HTMLResponse)
+    def admin_page(request: Request):
+        user = current_user(request)
+        if not user:
+            return to("/login")
+        with admin_story(user) as (story, sconn):
+            if story is None:
+                return to("/")
+            settings = story.game_settings()
+            counts = game.player_counts(sconn)
+            characters = [game.Character.from_row(r) for r in
+                          sconn.execute("SELECT * FROM characters ORDER BY alive DESC, name COLLATE NOCASE")]
+            return render(
+                request, "admin.html", story=story, log=admin.recent(sconn), characters=characters,
+                counts=counts, online=hub.online_characters(story.name),
+                world_time=game.world_time(sconn, settings), round_number=rounds.current_round(sconn),
+                cap=controls.describe_cap(conn(), story), lore=admin.pending_lore(story.path),
+                removed=game.removed_players(sconn), help=admin.HELP,
+            )
+
+    @app.post("/admin")
+    def admin_command(request: Request, background: BackgroundTasks, text: str = Form("")):
+        user = current_user(request)
+        if not user:
+            return to("/login")
+        text = text.strip()
+        with admin_story(user) as (story, sconn):
+            if story is None:
+                return to("/")
+            if not text:
+                return to("/admin")
+            admin.log(sconn, "command", text[:MAX_PROMPT_CHARS], username=user)
+            try:
+                result = admin.run(sconn, story.path, text)
+                reply = carry_out(story, sconn, result, background)
+            except (admin.CommandError, rounds.RoundError, game.GameError) as e:
+                reply = str(e)
+            except NarratorError as e:
+                reply = f"The AI couldn't carry that out: {e}. Nothing changed."
+            admin.log(sconn, "reply", reply)
+        return to("/admin#latest")
+
+    def carry_out(story, sconn, result: admin.CommandResult, background: BackgroundTasks) -> str:
+        reply = result.reply
+        if result.force_round:
+            if round_locks[story.name].locked():
+                return "A round change is already happening."
+            background.add_task(change_round, story.name)
+        if result.rollback_to is not None:
+            rounds.rollback(story.path, sconn, result.rollback_to)
+            reply = f"The story is back at the start of round {result.rollback_to}."
+            result.notify_all = True
+        if result.ai is not None:
+            command, text = result.ai
+            online = hub.online_characters(story.name)
+            context = rounds.round_context(sconn, story.game_settings(), story.display_name, online)
+            outcome = narrator.intervene(load_premise(story.path), context, command, text)
+            result.notify = admin.apply_intervention(sconn, outcome)
+            reply = outcome.reply
+        if result.notify_all:
+            hub.notify_story(story.name)
+        elif result.notify:
+            hub.notify(story.name, result.notify)
+        return reply
+
+    # --- Schedules --------------------------------------------------------
+
+    if run_scheduler:
+        def scheduler() -> None:
+            last = datetime.now()
+            while True:
+                time.sleep(20)
+                now = datetime.now()
+                try:
+                    c = conn()
+                    before = stories.status(c).story
+                    events = controls.schedule_tick(c, config.stories_dir, last, now)
+                    for e in events:
+                        log.info("Schedule: %s", e)
+                    if events and before:
+                        hub.notify_story(before)  # open pages reload and find the story offline
+                except Exception:  # the scheduler must keep running
+                    log.exception("Schedule check failed")
+                last = now
+
+        threading.Thread(target=scheduler, name="coose-schedule", daemon=True).start()
 
     # --- Live updates -----------------------------------------------------
 

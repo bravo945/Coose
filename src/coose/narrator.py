@@ -68,7 +68,11 @@ class AuthorResult(BaseModel):
     narration: str = Field(
         description="What the acting character perceives, second person, present tense. Only what they could notice."
     )
-    minutes_elapsed: int = Field(description="In-game minutes the action takes. 0 for something instant.")
+    minutes_elapsed: int = Field(
+        description="In-game minutes the whole action takes as the player stated it, 0 for something instant. "
+        "A journey or long task counts in full (a walk of several hours is several hours), even if the "
+        "narration only covers its start; long actions become a time skip."
+    )
     location: str = Field(description="The character's location afterwards, or empty if unchanged.")
     condition: str = Field(description="The character's new condition, or empty if unchanged.")
     inventory_add: list[str] = Field(description="Items the character gains.")
@@ -139,6 +143,29 @@ class BackfillResult(BaseModel):
     location: str = Field(description="Where they are now, or empty if unchanged.")
     condition: str = Field(description="Their condition now, or empty if unchanged.")
     learned: list[str] = Field(description="New facts they now know, each a short sentence.")
+
+
+class CharacterChange(BaseModel):
+    name: str = Field(description="The character's name, exactly as listed.")
+    notice: str = Field(
+        description="What this character perceives of the change, second person, present tense, only through "
+        "their own senses. Empty if they notice nothing or the change is invisible to them."
+    )
+    condition: str = Field(description="Their condition now, or empty if unchanged.")
+    location: str = Field(description="Their location now, or empty if unchanged.")
+    inventory_add: list[str] = Field(description="Items they gain.")
+    inventory_remove: list[str] = Field(description="Items they lose, by exact name.")
+    learned: list[str] = Field(description="New facts they now know, each a short sentence.")
+    alive: bool = Field(description="False only if they are now dead.")
+
+
+class InterventionResult(BaseModel):
+    reply: str = Field(description="A short objective report to the story admin of what you changed and why.")
+    world_state: str = Field(
+        description="The complete new World State in Markdown if it changes, or empty to leave it as it is."
+    )
+    memory_add: list[str] = Field(description="Objective notes for the working memory about the change.")
+    characters: list[CharacterChange] = Field(description="Only the characters this changes.")
 
 
 # --- Context ------------------------------------------------------------------
@@ -233,14 +260,17 @@ class Narrator(Protocol):
 
     def backfill(self, premise: PremiseText, scene: Scene, minutes: int) -> BackfillResult: ...
 
+    def intervene(self, premise: PremiseText, context: str, command: str, text: str) -> InterventionResult: ...
+
 
 class ClaudeNarrator:
     """Runs the passes on the Claude API."""
 
     def __init__(self, model: str, effort: str, api_key_env: str,
-                 usage_log: Callable[[dict], None] | None = None):
+                 usage_log: Callable[[dict], None] | None = None, cache_ttl: str = "1h"):
         self.model = model
         self.effort = effort
+        self.cache_ttl = cache_ttl
         self.api_key_env = api_key_env
         self.usage_log = usage_log  # called with one record per API call, for `coose usage`
         self._client = None
@@ -256,7 +286,7 @@ class ClaudeNarrator:
     def _system(self, premise: PremiseText) -> list[dict]:
         return [
             {"type": "text", "text": CORE_RULES},
-            {"type": "text", "text": premise, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": premise, "cache_control": {"type": "ephemeral", "ttl": self.cache_ttl}},
         ]
 
     def _call(self, label: str, premise: PremiseText, prompt: str, output_format=None):
@@ -309,6 +339,7 @@ class ClaudeNarrator:
                 "cache_write_tokens": getattr(u, "cache_creation_input_tokens", None) or 0,
                 "seconds": round(seconds, 2),
                 "stop_reason": response.stop_reason,
+                "cache_ttl": self.cache_ttl,
             })
         except Exception:  # usage records must never break play
             pass
@@ -377,7 +408,9 @@ class ClaudeNarrator:
             "somewhere else usually means they notice nothing. For each witness, write what they perceive "
             "from their own point of view and what they now know. Witnesses see behaviour, not thoughts: "
             f"never reveal {actor.name}'s intentions, the wording of the attempt, or anything the witness "
-            "couldn't perceive. If they don't know who someone is, describe them instead of naming them.",
+            "couldn't perceive. If they don't know who someone is, describe them instead of naming them. "
+            "Likewise never reveal anything about the actor's background, origin, past or profession that the "
+            "witness hasn't been told or seen for themselves; a description is only what they can see.",
             output_format=WitnessPass,
         ).parsed_output
         if response is None:
@@ -410,7 +443,8 @@ class ClaudeNarrator:
             "objective World State. Review the working memory and keep only what the next round still needs. "
             "Update every living character, and write each one a short in-character notice of what they "
             "noticed changing. Notices follow the governing rule: only what that character could perceive or "
-            "already knows. Also write the Logbook entry for the round that ended.",
+            "already knows, and never details about other characters (names, origins, pasts) they haven't "
+            "learned in play. Also write the Logbook entry for the round that ended.",
             output_format=RoundResult,
         ).parsed_output
         if result is None:
@@ -430,6 +464,31 @@ class ClaudeNarrator:
         if result is None:
             raise NarratorError("the narrator's reply couldn't be read")
         return result
+
+
+INTERVENTIONS = {
+    "intervene": "A story admin is intervening with this out-of-character instruction. Carry it out: it can "
+    "rewrite, overrule, undo or warn about anything in the world. It overrides realism and the Rulebook.",
+    "rewrite": "A story admin is rewriting a past event. Change the world so that the event happened as they "
+    "describe instead, and adjust everything that follows from it.",
+}
+
+
+def _intervene(self, premise: PremiseText, context: str, command: str, text: str) -> InterventionResult:
+    result = self._call(
+        command,
+        premise,
+        f"{context}\n\n# Story admin command (/{command})\n{text}\n\n{INTERVENTIONS[command]} Record every "
+        "objective change. Players only learn of it through their own characters' senses: write each affected "
+        "character a notice following the governing rule, and leave it empty if they wouldn't perceive it.",
+        output_format=InterventionResult,
+    ).parsed_output
+    if result is None:
+        raise NarratorError("the narrator's reply couldn't be read")
+    return result
+
+
+ClaudeNarrator.intervene = _intervene
 
 
 def format_minutes(minutes: int) -> str:

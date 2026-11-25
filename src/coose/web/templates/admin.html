@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Admin · {{ story.display_name }}{% endblock %}
+{% block content %}
+<div class="sidebar-layout">
+    <aside class="stack">
+        <div class="stack">
+            <h2>{{ story.display_name }}</h2>
+            <p>Round {{ round_number }} · {{ world_time.strftime("%a %d %b %Y, %H:%M") }}</p>
+            <p>{% if server.online %}Online{% else %}Paused{% endif %} · <small>{{ cap }}</small></p>
+            {% if lore %}<p>Lore waiting for review: {{ lore | join(", ") }}</p>{% endif %}
+            {% if removed %}<p>Removed players: {{ removed | join(", ") }}</p>{% endif %}
+        </div>
+        <h3>Characters</h3>
+        <ul class="stack">
+            {% for c in characters %}
+            <li>
+                <strong>{{ c.name }}</strong>{% if not c.alive %} <span class="badge">Dead</span>{% endif %}
+                {% if c.id in online %}<span class="badge badge--info">Player here</span>{% endif %}
+                <br><small>{{ c.location or "?" }} · {{ c.condition }} · {{ counts.get(c.id, 0) }} playing</small>
+            </li>
+            {% endfor %}
+        </ul>
+        <a class="btn" href="/">Back to play</a>
+    </aside>
+
+    <section class="stack">
+        <h1>Admin chatroom</h1>
+        <p class="text-muted">Commands are out of character. Players only learn what their own characters perceive.</p>
+        <div class="chat" id="chat">
+            {% for m in log %}
+            <article class="msg msg--{{ 'command' if m.kind == 'command' else 'system' }}" {% if loop.last %}id="latest"{% endif %}>
+                {%- if m.kind == "command" -%}<span class="msg__tag">/ Command</span><small>{{ m.username }}</small>
+{{ m.text }}{%- else -%}{{ m.text }}{%- endif -%}
+            </article>
+            {% else %}
+            <p class="text-muted">No commands yet. Type /help for the list.</p>
+            {% endfor %}
+        </div>
+        <form class="stack" method="post" action="/admin" id="command">
+            <label for="text">Command</label>
+            <textarea id="text" name="text" rows="3" maxlength="4000" required placeholder="/help"></textarea>
+            <button class="btn btn--solid" type="submit">Send</button>
+            <small>/intervene and /rewrite ask the AI and can take a little while.</small>
+        </form>
+        <details><summary>All commands</summary><pre class="doc">{{ help }}</pre></details>
+    </section>
+</div>
+<script>
+    document.getElementById("command").addEventListener("submit", (e) => {
+        const button = e.target.querySelector("button[type=submit]");
+        button.disabled = true;
+        button.textContent = "Working...";
+    });
+</script>
+{% endblock %}

@@ -13,7 +13,7 @@ This repository holds the Coose server. It is built in milestones. So far:
 
 - **Milestone 5:** playtest tooling. `coose playtest` runs a scripted scene through the real server and AI on a scratch copy of a story and writes a transcript (see [docs/playtest.md](docs/playtest.md)). Every API call is recorded, and `coose usage` shows calls and tokens per pass.
 
-Story admin commands, schedules and caps arrive in milestone 6.
+- **Milestone 6:** story admins, caps and schedules. The owner appoints story admins (`coose admin add`), who get an Admin chatroom on the site for out-of-character commands: force a round, roll back, move the clock, edit characters and the World State, give and take items, kill and revive, remove players, approve AI-written lore, and `/intervene` or `/rewrite` to have the AI carry out any change, telling each character only what they perceive. The owner can cap a story (`coose cap`), which pauses it after a number of Actions or rounds, and give it opening hours (`coose schedule`), which open and close it while `coose serve` runs. The Premise is now cached for an hour between AI calls, and `coose usage` and playtests show estimated dollar costs.
 
 ## Setup
 
@@ -54,6 +54,17 @@ coose serve                   # starts the player site on host:port from coose.t
 ```
 
 Other owner commands: `coose pause`, `coose resume`, `coose status`, `coose account list`, `coose account password <name>`, `coose account remove <name>`.
+
+### Story admins, caps and schedules
+
+```sh
+coose admin add ray my-story             # ray gets the Admin chatroom for my-story
+coose cap my-story --actions 200         # pause after 200 more Actions (or --rounds 10; --clear to remove)
+coose schedule add my-story fri,sat 19:00 23:00   # opening hours, in the server's local time
+coose schedule list
+```
+
+Accounts listed under `admins` in a story's `Settings.yaml` are story admins too. A capped story stays paused until the owner raises or clears the cap. Schedules only act when an opening starts or ends, so a manual pause or resume in between is left alone; when openings overlap, the one that started later wins. Story admins type `/help` in their Admin chatroom for the list of commands.
 
 Only one story runs at a time. Pausing or switching never deletes anything; players who log in meanwhile see a "story offline" notice.
 

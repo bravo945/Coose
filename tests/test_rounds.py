@@ -63,7 +63,7 @@ def test_apply_round_archives_advances_and_notifies(story, sconn):
 
     entry = (story.path / "Logbook" / "Round 1.md").read_text()
     assert entry.startswith("# Round 1 (First light)") and "Mara reached the gate." in entry
-    assert "## Deaths\nNone." in entry and "Write the starting state here" in entry  # the old World State
+    assert "## Deaths\nNone." in entry and "## World State at the start of the round" in entry and "Write the starting state here" in entry
     assert game.world_state(sconn) == "# World State\nThe gate is open."
     assert game.working_memory(sconn) == ["Keep: Jon owes Mara."]
     assert game.clock_minutes(sconn) == 90  # the longest skip

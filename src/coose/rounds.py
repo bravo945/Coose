@@ -205,7 +205,7 @@ def write_logbook(story_path: Path, number: int, outcome: RoundOutcome, old_stat
         f"## Summary\n{outcome.summary.strip() or 'Nothing recorded.'}\n\n"
         f"## Relevant Characters\n{outcome.relevant_characters.strip() or 'None.'}\n\n"
         f"## Deaths\n{outcome.deaths.strip() or 'None.'}\n\n"
-        f"## World State at the end of the round\n{old_state.strip()}\n",
+        f"## World State at the start of the round\n{old_state.strip()}\n",
         encoding="utf-8",
     )
     return path

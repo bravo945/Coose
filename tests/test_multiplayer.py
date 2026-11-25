@@ -89,6 +89,13 @@ def test_dialogue_to_an_away_player_gets_a_narrated_reply(app, narrator):
     assert "narrator answered Mara for you" in chat(jon)
 
 
+def test_a_narrated_reply_goes_into_working_memory(app, narrator, sconn):
+    mara, _ = player(app, "nil", "Mara"), player(app, "jon", "Jon")
+    mara.post("/prompt", data={"kind": "dialogue", "text": "Open the gate."})
+    assert any("Jon (player away) answered Mara" in m and "Leave me alone." in m
+               for m in game.working_memory(sconn))
+
+
 def test_dialogue_only_to_chosen_people_at_the_same_place(app, narrator, sconn, config):
     mara, jon = player(app, "nil", "Mara"), player(app, "jon", "Jon")
     settings = stories.find_story(config.stories_dir, "demo").game_settings()

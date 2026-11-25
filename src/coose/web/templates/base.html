@@ -20,6 +20,7 @@
             {% endif %}
         </div>
         <nav class="bar__nav cluster" aria-label="Account">
+            {% if story_admin %}<a class="btn" href="/admin">Admin</a>{% endif %}
             <span class="text-muted">{{ user }}</span>
             <form method="post" action="/logout">
                 <button class="btn" type="submit">Log out</button>
