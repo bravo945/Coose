@@ -18,6 +18,15 @@ stories_dir = "stories"
 #   export COOSE_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
 secret_key_env = "COOSE_SECRET_KEY"
 
+[panel]
+# The owner's private control panel (`coose panel`). Bind it to this machine's
+# Tailscale address (run `tailscale ip -4`) so only your tailnet can reach it,
+# and never point the Cloudflare tunnel at it.
+host = "127.0.0.1"
+port = 8001
+# Name of the environment variable holding the panel's password.
+password_env = "COOSE_PANEL_PASSWORD"
+
 [ai]
 # Name of the environment variable holding the Claude API key.
 # The key itself never goes in this file or in a story folder.

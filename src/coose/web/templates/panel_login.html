@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Owner panel · Coose{% endblock %}
+{% block content %}
+<div class="container-narrow container">
+    <form class="card card--accent stack" method="post" action="/login">
+        <h1 class="card__title">Owner panel</h1>
+        {% if error %}<p class="alert alert--bad" role="alert">{{ error }}</p>{% endif %}
+        <div>
+            <label for="password">Panel password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+        </div>
+        <button class="btn btn--solid" type="submit">Sign in</button>
+    </form>
+</div>
+{% endblock %}

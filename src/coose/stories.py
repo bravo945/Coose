@@ -107,6 +107,7 @@ def open_story_db(story: Story) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(STORY_SCHEMA)
     conn.executescript(game.SCHEMA)
+    game.migrate(conn)
     admin.ensure_schema(conn)
     world_state_file = story.path / "WorldState.md"
     fresh = game.init_world(

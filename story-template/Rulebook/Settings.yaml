@@ -2,7 +2,7 @@
 
 display_name: "My Story"        # shown to players
 
-# Accounts that administer this story (later)
+# Accounts that administer this story (the owner can also add some with `coose admin add`)
 admins: []
 
 # Time and rounds
@@ -16,7 +16,7 @@ players_can_create: true
 ai_characters_public: true      # characters the narrator introduces can be played by anyone
 max_players: 9                  # (later)
 players_per_character: 3
-collectives: true               # (later)
+collectives: true               # players may request collective characters (a story admin approves them)
 absent_characters: speak_only   # when a player is away: speak_only | act_within_reason | freeze
 offline_during_skips: ai_plays  # offline characters in a skip: ai_plays | backfill_on_return
 

@@ -30,6 +30,13 @@
                 <option value="locked" {% if form.visibility == "locked" %}selected{% endif %}>Only me (locked)</option>
             </select>
         </div>
+        {% if collectives %}
+        <div>
+            <label><input type="checkbox" name="collective" value="true" {% if form.collective %}checked{% endif %}>
+                A collective: a group played as one character, such as a militia or a town</label>
+            <small>A story admin has to approve a collective before you can play it.</small>
+        </div>
+        {% endif %}
         <div class="cluster">
             <button class="btn btn--solid" type="submit">Create and play</button>
             <a class="btn" href="/characters">Cancel</a>

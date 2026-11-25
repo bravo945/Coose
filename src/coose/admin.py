@@ -13,7 +13,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import game, rounds
+from . import game, lore, rounds
+from .lore import AI_ADDITIONS, pending_lore
 
 ADMIN_SCHEMA = """
 CREATE TABLE IF NOT EXISTS admin_log (
@@ -25,8 +26,6 @@ CREATE TABLE IF NOT EXISTS admin_log (
 );
 """
 
-AI_ADDITIONS = Path("Premise") / "AI Additions"
-
 HELP = """\
 Commands (out of character; players never see them):
 /round: force a round change now
@@ -37,7 +36,8 @@ Commands (out of character; players never see them):
 /edit character <character>: <condition|location|description> = <text>
 /edit world <the complete new World State>
 /remove player <account>   /add player <account>
-/approve [file]   /reject <file>: AI-written lore in Premise/AI Additions (no file: list it)
+/approve [name]   /reject <name>: a requested collective character, or AI-written lore in
+    Premise/AI Additions (no name: list what's waiting)
 /intervene <instruction>: the AI carries out any change you describe
 /rewrite <how a past event really went>: the AI rewrites it and what followed
 /help: this list"""
@@ -196,6 +196,18 @@ def run(conn: sqlite3.Connection, story_path: Path, text: str) -> CommandResult:
                              notify=[was_playing.id] if was_playing else [])
 
     if head in ("approve", "reject"):
+        if rest:
+            decided = game.decide_collective(conn, rest, approve=head == "approve")
+            if decided is not None:
+                if head == "approve":
+                    _tell(conn, decided, f"A story admin approved {decided.name} as a collective character. "
+                                         "You can play it now.")
+                    return CommandResult(f"{decided.name} is now a playable collective.")
+                return CommandResult(f"Rejected and deleted the collective {decided.name}.")
+        elif head == "approve":
+            groups = ", ".join(c.name for c in game.pending_collectives(conn)) or "none"
+            return CommandResult(f"Collectives waiting for approval: {groups}. AI-written lore waiting: "
+                                 + (", ".join(pending_lore(story_path)) or "none") + ".")
         return _lore(story_path, head, rest)
 
     if head in ("intervene", "rewrite"):
@@ -204,13 +216,6 @@ def run(conn: sqlite3.Connection, story_path: Path, text: str) -> CommandResult:
         return CommandResult(ai=(head, rest))
 
     raise CommandError(f"Unknown command '/{head}'. Type /help for the list.")
-
-
-def pending_lore(story_path: Path) -> list[str]:
-    folder = story_path / AI_ADDITIONS
-    if not folder.is_dir():
-        return []
-    return sorted(p.name for p in folder.glob("*.md") if p.name.lower() != "readme.md")
 
 
 def _lore(story_path: Path, head: str, name: str) -> CommandResult:
@@ -233,10 +238,12 @@ def _lore(story_path: Path, head: str, name: str) -> CommandResult:
     return CommandResult(f"Moved {match} into the Premise.")
 
 
-def apply_intervention(conn: sqlite3.Connection, result) -> list[int]:
+def apply_intervention(conn: sqlite3.Connection, result, story_path: Path | None = None) -> list[int]:
     """Write what the AI decided for /intervene or /rewrite. Returns the characters told about it."""
     if result.world_state.strip():
         game.set_world_state(conn, result.world_state.strip())
+    if story_path is not None:
+        lore.write_lore(story_path, result.lore, "during a story admin's command")
     game.add_memory(conn, result.memory_add)
     told = []
     for change in result.characters:
@@ -246,7 +253,7 @@ def apply_intervention(conn: sqlite3.Connection, result) -> list[int]:
         game.apply_action(conn, character, game.ActionOutcome(
             narration="", minutes_elapsed=0, location=change.location, condition=change.condition,
             inventory_add=change.inventory_add, inventory_remove=change.inventory_remove, learned=change.learned,
-            alive=change.alive,
+            alive=change.alive, parts=change.parts,
         ), advance_clock=False, count=False)
         if change.notice.strip():
             game.add_message(conn, character.id, "narration", change.notice.strip())

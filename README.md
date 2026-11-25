@@ -15,6 +15,8 @@ This repository holds the Coose server. It is built in milestones. So far:
 
 - **Milestone 6:** story admins, caps and schedules. The owner appoints story admins (`coose admin add`), who get an Admin chatroom on the site for out-of-character commands: force a round, roll back, move the clock, edit characters and the World State, give and take items, kill and revive, remove players, approve AI-written lore, and `/intervene` or `/rewrite` to have the AI carry out any change, telling each character only what they perceive. The owner can cap a story (`coose cap`), which pauses it after a number of Actions or rounds, and give it opening hours (`coose schedule`), which open and close it while `coose serve` runs. The Premise is now cached for an hour between AI calls, and `coose usage` and playtests show estimated dollar costs.
 
+- **Milestone 7:** collective characters, AI-written lore and the owner panel. Players can request a collective character, such as a militia or a town; once a story admin approves it (`/approve <name>`), it is played like any other but can split into parts in different places, and the narrator stops knowledge travelling between parts by unrealistic means. When the AI invents lasting lore at a round change or during `/intervene`, it writes it to `Premise/AI Additions/` for story admins to approve into the Premise or reject; it never edits the author's files. `coose panel` serves a private owner panel with the terminal's controls (stories, pause and resume, caps, schedules, story admins, accounts, AI costs) for the owner's Tailscale network.
+
 ## Setup
 
 Requires Python 3.11 or newer.
@@ -65,6 +67,15 @@ coose schedule list
 ```
 
 Accounts listed under `admins` in a story's `Settings.yaml` are story admins too. A capped story stays paused until the owner raises or clears the cap. Schedules only act when an opening starts or ends, so a manual pause or resume in between is left alone; when openings overlap, the one that started later wins. Story admins type `/help` in their Admin chatroom for the list of commands.
+
+### The owner panel
+
+```sh
+export COOSE_PANEL_PASSWORD="..."        # the panel's own password
+coose panel                               # serves [panel] host:port from coose.toml
+```
+
+Set `[panel] host` in `coose.toml` to this machine's Tailscale address (`tailscale ip -4`) so only your tailnet can reach it. Never point the Cloudflare tunnel at the panel's port. `coose panel` refuses to listen on every network (`0.0.0.0`). It runs alongside `coose serve` as a second process.
 
 Only one story runs at a time. Pausing or switching never deletes anything; players who log in meanwhile see a "story offline" notice.
 

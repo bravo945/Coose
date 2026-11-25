@@ -24,6 +24,10 @@
             <h1>{{ character.name }}</h1>
             <p><strong>Condition:</strong> {{ character.condition }}</p>
             <p><strong>Location:</strong> {{ character.location or "Unknown" }}</p>
+            {% if character.collective %}
+            <p><strong>Collective.</strong> {% if character.parts %}Parts:{% else %}All together, as one body.{% endif %}</p>
+            {% if character.parts %}<ul>{% for p in character.parts %}<li>{{ p.name }} ({{ p.members or "?" }}) at {{ p.location or "?" }}</li>{% endfor %}</ul>{% endif %}
+            {% endif %}
             <p><strong>Inventory:</strong> {{ character.inventory | join(", ") if character.inventory else "Nothing" }}</p>
             <p class="doc">{{ character.description }}</p>
         </div>

@@ -18,7 +18,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import game
+from . import game, lore
 from .game import _get, _set, _write_lock
 
 SNAPSHOT_DIR = Path(".coose") / "snapshots"
@@ -130,6 +130,7 @@ class CharacterUpdate:
     location: str = ""
     learned: list[str] = field(default_factory=list)
     alive: bool = True
+    parts: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -143,6 +144,7 @@ class RoundOutcome:
     world_state: str
     working_memory: list[str]
     characters: list[CharacterUpdate] = field(default_factory=list)
+    lore: list[dict] = field(default_factory=list)
 
 
 def apply_round(conn: sqlite3.Connection, story_path: Path, settings: game.Settings, outcome: RoundOutcome,
@@ -157,9 +159,10 @@ def apply_round(conn: sqlite3.Connection, story_path: Path, settings: game.Setti
     old_state = game.world_state(conn)
     skip = longest_skip(conn)
     write_logbook(story_path, number, outcome, old_state)
+    lore.write_lore(story_path, outcome.lore, f"at the end of round {number}")
     by_name = {u.name.strip().lower(): u for u in outcome.characters}
     with _write_lock:
-        characters = [game.Character.from_row(r) for r in conn.execute("SELECT * FROM characters WHERE alive = 1")]
+        characters = [game.Character.from_row(r) for r in conn.execute("SELECT * FROM characters WHERE alive = 1 AND pending = 0")]
         owed = backfills(conn)
         with conn:
             _set(conn, "clock_minutes", str(game.clock_minutes(conn) + skip))
@@ -173,9 +176,11 @@ def apply_round(conn: sqlite3.Connection, story_path: Path, settings: game.Setti
                 if update is None:
                     continue
                 conn.execute(
-                    "UPDATE characters SET condition = ?, location = ?, knowledge = ?, alive = ? WHERE id = ?",
+                    "UPDATE characters SET condition = ?, location = ?, knowledge = ?, alive = ?, parts = ? "
+                    "WHERE id = ?",
                     (update.condition.strip() or c.condition, update.location.strip() or c.location,
                      json.dumps(c.knowledge + [k for k in update.learned if k.strip()]), int(bool(update.alive)),
+                     json.dumps(game.clean_parts(update.parts) if c.collective and update.parts else c.parts),
                      c.id),
                 )
                 if update.notice.strip():
@@ -256,6 +261,7 @@ def rollback(story_path: Path, conn: sqlite3.Connection, number: int) -> None:
             source.backup(conn)
         finally:
             source.close()
+        game.migrate(conn)
         with conn:
             conn.execute("DELETE FROM players")
             for username, character_id, since in players:
@@ -282,7 +288,7 @@ def round_context(conn: sqlite3.Connection, settings: game.Settings, story_title
     skip = longest_skip(conn)
     skips = pending_skips(conn)
     characters = [game.Character.from_row(r) for r in
-                  conn.execute("SELECT * FROM characters WHERE alive = 1 ORDER BY name COLLATE NOCASE")]
+                  conn.execute("SELECT * FROM characters WHERE alive = 1 AND pending = 0 ORDER BY name COLLATE NOCASE")]
     names = {c.id: c.name for c in characters}
     lines = [
         f"# Round change in {story_title}",
@@ -308,7 +314,8 @@ def round_context(conn: sqlite3.Connection, settings: game.Settings, story_title
         if any(s.character_id == c.id for s in skips):
             status += ", in the middle of a skip"
         lines.append(f"- {c.name} ({status}) | location: {c.location or 'unspecified'} | condition: {c.condition}"
-                     f" | inventory: {', '.join(c.inventory) or 'nothing'}")
+                     f" | inventory: {', '.join(c.inventory) or 'nothing'}"
+                     + (f" | collective, parts: {game.describe_parts(c.parts) or 'one body'}" if c.collective else ""))
     events = round_events(conn)
     lines.append("# This round's events, in order\n"
                  + ("\n".join(f"[{name} {kind}] {text}" for name, kind, text in events) or "(nothing happened)"))

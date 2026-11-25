@@ -7,6 +7,8 @@
             <h2>{{ story.display_name }}</h2>
             <p>Round {{ round_number }} · {{ world_time.strftime("%a %d %b %Y, %H:%M") }}</p>
             <p>{% if server.online %}Online{% else %}Paused{% endif %} · <small>{{ cap }}</small></p>
+            {% if waiting %}<p>Collectives waiting for approval: {{ waiting | map(attribute="name") | join(", ") }}
+                (<code>/approve name</code> or <code>/reject name</code>)</p>{% endif %}
             {% if lore %}<p>Lore waiting for review: {{ lore | join(", ") }}</p>{% endif %}
             {% if removed %}<p>Removed players: {{ removed | join(", ") }}</p>{% endif %}
         </div>
@@ -14,7 +16,7 @@
         <ul class="stack">
             {% for c in characters %}
             <li>
-                <strong>{{ c.name }}</strong>{% if not c.alive %} <span class="badge">Dead</span>{% endif %}
+                <strong>{{ c.name }}</strong>{% if c.collective %} <span class="badge">Collective</span>{% endif %}{% if not c.alive %} <span class="badge">Dead</span>{% endif %}
                 {% if c.id in online %}<span class="badge badge--info">Player here</span>{% endif %}
                 <br><small>{{ c.location or "?" }} · {{ c.condition }} · {{ counts.get(c.id, 0) }} playing</small>
             </li>
