@@ -78,7 +78,7 @@ def set_state(conn: sqlite3.Connection, key: str, value: str | None) -> None:
 def log_usage(conn: sqlite3.Connection, story: str | None, record: dict) -> None:
     cost = pricing.estimate(record["model"], record["input_tokens"], record["output_tokens"],
                             record["cache_read_tokens"], record["cache_write_tokens"],
-                            record.get("cache_ttl", "5m"))
+                            record.get("cache_ttl", "5m"), record.get("cache_write_1h_tokens"))
     with conn:
         conn.execute(
             "INSERT INTO ai_usage (story, pass, model, input_tokens, output_tokens, cache_read_tokens, "

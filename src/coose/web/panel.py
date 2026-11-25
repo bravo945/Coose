@@ -7,7 +7,9 @@ port and is never served through the public site or the Cloudflare tunnel.
 from __future__ import annotations
 
 import hmac
+import re
 import secrets
+from collections import deque
 from pathlib import Path
 from typing import Callable
 
@@ -17,8 +19,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from .. import accounts, controls, db, stories
+from .. import accounts, aisettings, controls, db, stories
+from ..cli import run_console
 from ..config import Config
+
+CONSOLE_HISTORY = 50
 
 HERE = Path(__file__).parent
 
@@ -29,6 +34,7 @@ def create_panel(config: Config, password: str, secret_key: str | None = None) -
                        session_cookie="coose_panel", max_age=60 * 60 * 12, same_site="strict", https_only=False)
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
+    console: deque[dict] = deque(maxlen=CONSOLE_HISTORY)  # this run's console, newest last
 
     def conn():
         return db.connect(config.server_db_path)
@@ -70,12 +76,59 @@ def create_panel(config: Config, password: str, secret_key: str | None = None) -
                 cap=controls.describe_cap(c, s) if s.valid else "",
                 schedule="; ".join(sp.describe() for sp in controls.get_schedule(c, s.name)),
                 admins=controls.admins(c, s),
+                ai=aisettings.profile(c, s.name, config.ai_defaults()) if s.valid else None,
             ))
         return templates.TemplateResponse(request, "panel.html", dict(
             server=st, user="owner", rows=rows, accounts=accounts.list_accounts(c),
             usage=db.usage_summary(c), total=sum(r["cost"] or 0 for r in db.usage_summary(c)),
             message=request.session.pop("message", None), error=request.session.pop("error", None),
+            console=list(console), tasks=aisettings.TASKS, task_help=aisettings.TASK_HELP,
+            models=aisettings.MODELS, efforts=aisettings.EFFORTS, prices=pricing_table(),
         ))
+
+    @app.post("/console")
+    def console_command(request: Request, command: str = Form("")):
+        if not signed_in(request):
+            return to("/login")
+        command = command.strip()
+        if command:
+            output, ok = run_console(config, command)
+            # Passwords typed into the console are used but never shown again.
+            shown = re.sub(r"(--password[ =])\S+", r"\1******", re.sub(r"^coose\s+", "", command))
+            console.append({"command": shown, "output": output, "ok": ok})
+        return to("/#console")
+
+    @app.post("/console/clear")
+    def console_clear(request: Request):
+        if signed_in(request):
+            console.clear()
+        return to("/#console")
+
+    @app.post("/ai")
+    def ai(request: Request, name: str = Form(""), task: str = Form(""), model: str = Form(""),
+           effort: str = Form(""), thinking: str = Form("")):
+        def do():
+            s = story(name)
+            result = aisettings.set_task(conn(), s.name, task, config.ai_defaults(), model=model or None,
+                                         effort=effort or None, thinking=thinking or None)
+            return f"'{s.display_name}' {task}: {result.describe()}."
+        return action(request, do)
+
+    @app.post("/ai/passes")
+    def ai_passes(request: Request, name: str = Form(""), passes: int = Form(2)):
+        def do():
+            s = story(name)
+            aisettings.set_action_passes(conn(), s.name, passes)
+            return f"'{s.display_name}' Actions now take {passes} AI pass{'es' if passes == 2 else ''}."
+        return action(request, do)
+
+    @app.post("/ai/reset")
+    def ai_reset(request: Request, name: str = Form("")):
+        def do():
+            s = story(name)
+            aisettings.reset(conn(), s.name)
+            return f"'{s.display_name}' uses the AI defaults from coose.toml again."
+        return action(request, do)
 
     def action(request: Request, do: Callable[[], str]):
         """Run one control and come back to the panel with its result."""
@@ -83,7 +136,8 @@ def create_panel(config: Config, password: str, secret_key: str | None = None) -
             return to("/login")
         try:
             request.session["message"] = do()
-        except (stories.StoryError, controls.ControlError, accounts.AccountError, ValueError) as e:
+        except (stories.StoryError, controls.ControlError, accounts.AccountError, aisettings.SettingError,
+                ValueError) as e:
             request.session["error"] = str(e)
         return to("/")
 
@@ -170,3 +224,9 @@ def create_panel(config: Config, password: str, secret_key: str | None = None) -
         return action(request, do)
 
     return app
+
+
+def pricing_table() -> list[tuple[str, float, float]]:
+    from .. import pricing
+
+    return [(m, p[0], p[1]) for m, p in pricing.PRICES.items()]

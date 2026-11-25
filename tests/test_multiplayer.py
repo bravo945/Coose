@@ -12,13 +12,17 @@ class FakeNarrator:
     def __init__(self):
         self.calls = []
         self.new_characters = []
+        self.present = []
+        self.scenes = []
 
     def action(self, premise, scene, text, existing=None):
         self.calls.append(("action", scene.character.name, text, existing))
+        self.scenes.append(scene)
         return AuthorResult(
             narration="You kick over the crate.", minutes_elapsed=1, location="", condition="",
             inventory_add=[], inventory_remove=[], learned=[], needs_met=[], alive=True,
             memory_add=["Mara kicked a crate at the gate."], new_characters=self.new_characters,
+            present=self.present,
         )
 
     def question(self, premise, scene, text):
@@ -31,10 +35,6 @@ class FakeNarrator:
                           learned=["Someone at the gate is angry."]),
             WitnessReport(name="Nobody", narration="ignored", learned=[]),
         ]
-
-    def reply_as(self, premise, scene, speaker, text, mode):
-        self.calls.append(("reply_as", scene.character.name, speaker, text, mode))
-        return "Leave me alone."
 
 
 @pytest.fixture
@@ -71,54 +71,43 @@ def chat(client):
     return html.unescape(client.get("/live").text)
 
 
-def test_dialogue_reaches_an_online_player_without_the_narrator(app, narrator):
-    mara, jon = player(app, "nil", "Mara"), player(app, "jon", "Jon")
-    with jon.websocket_connect("/ws") as ws:
-        mara.post("/prompt", data={"kind": "dialogue", "text": "Open the gate."})
-        assert ws.receive_text() == "update"
-        assert 'Mara says to you: "Open the gate."' in chat(jon)
-    assert 'To Jon: "Open the gate."' in chat(mara)
-    assert narrator.calls == []
+def people(narrator) -> str:
+    return "\n".join(narrator.scenes[-1].people)
 
 
-def test_dialogue_to_an_away_player_gets_a_narrated_reply(app, narrator):
-    mara, jon = player(app, "nil", "Mara"), player(app, "jon", "Jon")
-    mara.post("/prompt", data={"kind": "dialogue", "text": "Open the gate."})
-    assert narrator.calls == [("reply_as", "Jon", "Mara", "Open the gate.", "speak_only")]
-    assert 'Jon says: "Leave me alone."' in chat(mara)
-    assert "narrator answered Mara for you" in chat(jon)
-
-
-def test_a_narrated_reply_goes_into_working_memory(app, narrator, sconn):
-    mara, _ = player(app, "nil", "Mara"), player(app, "jon", "Jon")
-    mara.post("/prompt", data={"kind": "dialogue", "text": "Open the gate."})
-    assert any("Jon (player away) answered Mara" in m and "Leave me alone." in m
-               for m in game.working_memory(sconn))
-
-
-def test_dialogue_only_to_chosen_people_at_the_same_place(app, narrator, sconn, config):
+def test_speech_goes_through_actions_and_the_narrator_knows_who_it_may_voice(app, narrator, sconn, config):
     mara, jon = player(app, "nil", "Mara"), player(app, "jon", "Jon")
     settings = stories.find_story(config.stories_dir, "demo").game_settings()
-    far = game.create_ai_character(sconn, settings, name="Far", description="Elsewhere.", location="Coast")
-    near = game.create_ai_character(sconn, settings, name="Vendor", description="Sells bread.",
-                                    location="drastead gate")
-    assert "Vendor" in chat(mara) and "Far" not in chat(mara)
+    game.create_ai_character(sconn, settings, name="Vendor", description="Sells bread.", location="Drastead gate")
+    game.create_ai_character(sconn, settings, name="Far", description="Elsewhere.", location="Coast")
+    mara.post("/prompt", data={"kind": "action", "text": 'I ask, "Any bread?"'})
+    lines = people(narrator)
+    assert "Jon | HERE with them" in lines and "player away: you may have them answer briefly" in lines
+    assert "Vendor | HERE with them" in lines and "nobody plays them: you voice them" in lines
+    assert "Far | at Coast" in lines
+    with jon.websocket_connect("/ws"):
+        mara.post("/prompt", data={"kind": "action", "text": "I wave."})
+        assert "Jon | HERE with them | Healthy, no injuries | played by an online player" in people(narrator)
 
-    mara.post("/prompt", data={"kind": "dialogue", "text": "Bread?", "recipient": [str(near.id), str(far.id)]})
-    assert [c[1] for c in narrator.calls] == ["Vendor"]
-    assert narrator.calls[0][4] == "act_within_reason"  # AI characters always answer
-    assert "Bread?" not in chat(jon)
-    assert any("said to Vendor" in m for m in game.working_memory(sconn))
 
-
-def test_freeze_mode_leaves_away_players_silent(app, narrator, story_dir):
+def test_freeze_mode_tells_the_narrator_to_keep_away_players_silent(app, narrator, story_dir):
     settings_file = story_dir / "Rulebook" / "Settings.yaml"
     settings_file.write_text(settings_file.read_text().replace(
         "absent_characters: speak_only", "absent_characters: freeze"))
     mara, jon = player(app, "nil", "Mara"), player(app, "jon", "Jon")
-    mara.post("/prompt", data={"kind": "dialogue", "text": "Hello?"})
-    assert narrator.calls == []
-    assert "Jon seems distracted" in chat(mara)
+    mara.post("/prompt", data={"kind": "action", "text": "I say hello."})
+    assert "player away: they stay silent and still" in people(narrator)
+
+
+def test_people_the_narrator_says_are_here_show_as_here(app, narrator, sconn, config):
+    mara = player(app, "nil", "Mara")
+    settings = stories.find_story(config.stories_dir, "demo").game_settings()
+    game.create_ai_character(sconn, settings, name="Dale", description="Gate guard.", location="Drastead main gate")
+    assert "Dale" not in chat(mara)  # "Drastead main gate" isn't the same text as "Drastead gate"
+    narrator.present = ["Dale"]
+    mara.post("/prompt", data={"kind": "action", "text": "I walk up to the guard."})
+    assert game.find_character_by_name(sconn, "Dale").location == "Drastead gate"
+    assert "Dale" in chat(mara)
 
 
 def test_witnesses_learn_what_they_saw(app, narrator, sconn):
@@ -151,7 +140,7 @@ def test_narrator_can_introduce_characters(app, narrator, sconn):
 
 def test_presence_shows_who_has_a_player_here(app):
     mara, jon = player(app, "nil", "Mara"), player(app, "jon", "Jon")
-    assert "narrator answers" in chat(mara)
+    assert "player away" in chat(mara)
     with jon.websocket_connect("/ws"):
         with mara.websocket_connect("/ws") as ws:
             assert "player here" in chat(mara)

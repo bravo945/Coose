@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Optional
 
 import typer
 
-from . import accounts, controls, db, rounds, stories
+from . import accounts, aisettings, controls, db, rounds, stories
 from .config import Config
 
 app = typer.Typer(help="Run and manage a Coose server.", no_args_is_help=True)
@@ -17,6 +18,8 @@ admin_app = typer.Typer(help="Appoint story admins.", no_args_is_help=True)
 app.add_typer(admin_app, name="admin")
 schedule_app = typer.Typer(help="Opening hours: when stories open and close by themselves.", no_args_is_help=True)
 app.add_typer(schedule_app, name="schedule")
+ai_app = typer.Typer(help="Choose the Claude model and effort for each AI task, per story.", no_args_is_help=True)
+app.add_typer(ai_app, name="ai")
 
 _state: dict = {}
 
@@ -27,7 +30,8 @@ def main(
         None, "--config", "-c", help="Path to coose.toml (default: ./coose.toml)."
     ),
 ) -> None:
-    _state["config"] = Config.load(config)
+    preset = _state.get("preset")  # the owner panel's console runs commands against its own config
+    _state["config"] = preset if preset is not None and config is None else Config.load(config)
 
 
 def _cfg() -> Config:
@@ -184,6 +188,59 @@ def schedule_clear(story: str) -> None:
     s = _story(story)
     controls.clear_schedule(_conn(), s.name)
     typer.echo(f"'{s.display_name}' has no schedule now.")
+
+
+# --- AI models and effort ----------------------------------------------------
+
+@ai_app.command("show")
+def ai_show(story: str) -> None:
+    """Show which model and effort each AI task uses in STORY."""
+    s = _story(story)
+    typer.echo(f"AI settings for '{s.display_name}':")
+    for line in aisettings.describe(aisettings.profile(_conn(), s.name, _cfg().ai_defaults())):
+        typer.echo("  " + line)
+
+
+@ai_app.command("set")
+def ai_set(
+    story: str,
+    task: str = typer.Argument(..., help=f"One of: {', '.join(aisettings.TASKS)}, or all."),
+    model: Optional[str] = typer.Option(None, "--model", help=f"One of: {', '.join(aisettings.MODELS)}."),
+    effort: Optional[str] = typer.Option(None, "--effort", help="low, medium, high, xhigh or max."),
+    thinking: Optional[str] = typer.Option(None, "--thinking", help="on or off (off isn't possible on every model)."),
+) -> None:
+    """Set the model, effort or thinking for one of STORY's AI tasks. Applies from the next prompt."""
+    s = _story(story)
+    if model is None and effort is None and thinking is None:
+        _fail("Give at least one of --model, --effort or --thinking.")
+    try:
+        result = aisettings.set_task(_conn(), s.name, task, _cfg().ai_defaults(), model=model, effort=effort,
+                                     thinking=thinking)
+    except aisettings.SettingError as e:
+        _fail(str(e))
+    typer.echo(f"'{s.display_name}' {task}: {result.describe()}.")
+
+
+@ai_app.command("passes")
+def ai_passes(story: str, passes: int = typer.Argument(..., help="2: Responder then Author. 1: one combined pass.")) -> None:
+    """Run each Action as two AI passes (more careful) or one (cheaper)."""
+    s = _story(story)
+    try:
+        aisettings.set_action_passes(_conn(), s.name, passes)
+    except aisettings.SettingError as e:
+        _fail(str(e))
+    typer.echo(f"'{s.display_name}' Actions now take {passes} AI pass{'es' if passes == 2 else ''}.")
+
+
+@ai_app.command("reset")
+def ai_reset(story: str, task: Optional[str] = typer.Argument(None, help="Only this task (default: all).")) -> None:
+    """Go back to coose.toml's defaults for STORY (or one of its tasks)."""
+    s = _story(story)
+    try:
+        aisettings.reset(_conn(), s.name, task)
+    except aisettings.SettingError as e:
+        _fail(str(e))
+    typer.echo(f"'{s.display_name}' uses the defaults from coose.toml" + (f" for {task}." if task else "."))
 
 
 # --- Stories ----------------------------------------------------------------
@@ -362,6 +419,53 @@ def panel() -> None:
     if (cfg.panel_host, cfg.panel_port) == (cfg.host, cfg.port):
         _fail("The panel needs a different port from the public site.")
     uvicorn.run(create_panel(cfg, password), host=cfg.panel_host, port=cfg.panel_port)
+
+
+# --- The owner panel's console -------------------------------------------------
+
+# Commands that run a server or a long job; they belong in a real terminal.
+CONSOLE_BLOCKED = {"serve": "it starts the player site", "panel": "it starts this panel",
+                   "playtest": "it runs for minutes; start it from the server's terminal"}
+
+_console_lock = threading.Lock()
+
+
+def run_console(config: Config, line: str) -> tuple[str, bool]:
+    """Run one `coose ...` command typed into the owner panel. Returns (output, succeeded).
+
+    It is the same command line as the terminal, run in-process against the
+    panel's own config. Prompts can't be answered here, so a command that
+    would ask for confirmation or a hidden password stops instead."""
+    import shlex
+
+    from click.testing import CliRunner
+
+    try:
+        args = shlex.split(line)
+    except ValueError as e:
+        return f"Couldn't read that command: {e}.", False
+    if args and args[0] == "coose":
+        args = args[1:]
+    if not args:
+        return "Type a command, for example: status, usage, ai show <story>, or --help.", False
+    if args[0] in ("-c", "--config"):
+        return "The console always uses the panel's own coose.toml.", False
+    if args[0] in CONSOLE_BLOCKED:
+        return f"`coose {args[0]}` can't run from the panel: {CONSOLE_BLOCKED[args[0]]}.", False
+    with _console_lock:
+        _state["preset"] = config
+        try:
+            result = CliRunner(env={"COLUMNS": "100", "NO_COLOR": "1"}).invoke(typer.main.get_command(app), args, input="", prog_name="coose",
+                                        catch_exceptions=True)
+        finally:
+            _state.pop("preset", None)
+    output = result.output.rstrip()
+    if result.exception is not None and not isinstance(result.exception, SystemExit):
+        output += f"\nError: {result.exception}"
+    if "Aborted" in output:
+        output += ("\n(The console can't answer prompts. Add --yes to confirm, or --password for passwords; "
+                   "the Accounts card is safer for passwords.)")
+    return output or "(no output)", result.exit_code == 0
 
 
 if __name__ == "__main__":

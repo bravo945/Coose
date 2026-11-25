@@ -1,13 +1,12 @@
-<fieldset id="nearby" class="stack">
-    <legend>Here with {{ character.name }}</legend>
+<section id="nearby" class="stack">
+    <h2 class="card__title">Here with {{ character.name }}</h2>
     {% for c in nearby %}
-    <label class="cluster">
-        <input type="checkbox" name="recipient" value="{{ c.id }}">
+    <p class="cluster">
         {{ c.name }}
-        {% if c.online %}<span class="module module--ok">player here</span>{% else %}<span class="module">narrator answers</span>{% endif %}
-    </label>
+        {% if c.online %}<span class="module module--ok">player here</span>{% elif c.ai %}<span class="module">narrator plays</span>{% else %}<span class="module">player away</span>{% endif %}
+    </p>
     {% else %}
     <small class="text-muted">Nobody else is here.</small>
     {% endfor %}
-    {% if nearby %}<small>For Dialogue, tick who you are speaking to. Tick nobody to speak to everyone here.</small>{% endif %}
-</fieldset>
+    <small>To speak, write it as an Action, for example: I tell the guard, "I'm only passing through."</small>
+</section>

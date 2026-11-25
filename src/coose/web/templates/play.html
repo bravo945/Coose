@@ -56,9 +56,8 @@
             <div>
                 <label for="kind">Prompt type</label>
                 <select id="kind" name="kind">
-                    <option value="action">! Action: something {{ character.name }} does</option>
+                    <option value="action">! Action: something {{ character.name }} does or says</option>
                     <option value="question">? Question: ask what {{ character.name }} knows</option>
-                    <option value="dialogue">"" Dialogue: something {{ character.name }} says to someone here</option>
                 </select>
             </div>
             {% include "_nearby.html" %}
@@ -84,12 +83,10 @@
                     const response = await fetch("/live", { credentials: "same-origin" });
                     if (!response.ok) { location.reload(); return; }
                     const fresh = new DOMParser().parseFromString(await response.text(), "text/html");
-                    const ticked = new Set([...document.querySelectorAll("#nearby input:checked")].map(i => i.value));
                     for (const id of ["status", "chat", "nearby"]) {
                         const now = document.getElementById(id), next = fresh.getElementById(id);
                         if (now && next) now.replaceWith(next);
                     }
-                    document.querySelectorAll("#nearby input").forEach(i => { i.checked = ticked.has(i.value); });
                     document.getElementById("latest")?.scrollIntoView({ block: "end" });
                 };
                 const connect = () => {

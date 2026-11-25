@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from coose import accounts, game, stories
-from coose.narrator import AuthorResult, NarratorError
+from coose.narrator import AuthorResult, NarratorError, NewCharacter, QuestionAnswer
 from coose.web.app import create_app
 
 
@@ -12,6 +12,7 @@ class FakeNarrator:
     def __init__(self):
         self.calls = []
         self.fail = False
+        self.new_people = []
 
     def action(self, premise, scene, text, existing=None):
         self.calls.append(("action", scene, text))
@@ -26,15 +27,12 @@ class FakeNarrator:
 
     def question(self, premise, scene, text):
         self.calls.append(("question", scene, text))
-        return "You don't know who runs the town."
+        return QuestionAnswer(answer="You don't know who runs the town.", new_characters=self.new_people,
+                              present=[p.name for p in self.new_people])
 
     def witnesses(self, premise, scene, text, result, others):
         self.calls.append(("witnesses", scene, text))
         return []
-
-    def reply_as(self, premise, scene, speaker, text, mode):
-        self.calls.append(("reply_as", scene, text))
-        return "Leave me alone."
 
 
 @pytest.fixture
@@ -94,11 +92,26 @@ def test_narrator_failure_changes_nothing(client, narrator, config):
     assert game.clock_minutes(sconn) == 0
 
 
-def test_dialogue_with_nobody_here(client, narrator):
+def test_dialogue_is_no_longer_a_prompt_type(client, narrator):
     create(client)
+    page = client.get("/").text
+    assert 'value="dialogue"' not in page and "does or says" in page
     r = client.post("/prompt", data={"kind": "dialogue", "text": "Hello"})
-    assert "nobody here" in html.unescape(r.text)
+    assert "isn't available" in html.unescape(r.text)
     assert narrator.calls == []
+
+
+def test_a_question_can_add_people_as_characters(client, narrator, config):
+    create(client)
+    narrator.new_people = [NewCharacter(name="Front gate guard", description="Bundled up, long gun.",
+                                        location="At the gate")]
+    client.post("/prompt", data={"kind": "question", "text": "Can you add the guards to the people here?"})
+    sconn = stories.open_story_db(stories.find_story(config.stories_dir, "demo"))
+    guard = game.find_character_by_name(sconn, "Front gate guard")
+    assert guard is not None and guard.owner is None
+    assert guard.location == "Drastead gate"  # lined up with Mara's, so they show as here
+    page = html.unescape(client.get("/").text)
+    assert "Now tracked as characters: Front gate guard." in page and "narrator plays" in page
 
 
 def test_invalid_character_shows_error(client):

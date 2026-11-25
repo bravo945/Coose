@@ -24,6 +24,17 @@ class Config:
     panel_host: str = "127.0.0.1"
     panel_port: int = 8001
     panel_password_env: str = "COOSE_PANEL_PASSWORD"
+    ai_tasks: dict | None = None  # [ai.tasks.<task>] overrides: model, effort, thinking
+    action_passes: int = 2
+
+    def ai_defaults(self):
+        """The server-wide AI settings every story starts from (see aisettings.py)."""
+        from dataclasses import replace
+
+        from . import aisettings
+
+        return replace(aisettings.defaults(self.model, self.effort, self.ai_tasks),
+                       action_passes=self.action_passes)
 
     @property
     def server_db_path(self) -> Path:
@@ -60,7 +71,15 @@ class Config:
             panel_host=panel.get("host", "127.0.0.1"),
             panel_port=int(panel.get("port", 8001)),
             panel_password_env=panel.get("password_env", "COOSE_PANEL_PASSWORD"),
+            ai_tasks=dict(ai.get("tasks", {}) or {}),
+            action_passes=_passes(ai.get("action_passes", 2)),
         )
+
+
+def _passes(value) -> int:
+    if str(value) not in ("1", "2"):
+        raise ValueError(f"action_passes in coose.toml must be 1 or 2, not {value!r}")
+    return int(value)
 
 
 def _cache_ttl(value) -> str:

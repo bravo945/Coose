@@ -17,7 +17,7 @@ players:
       location: The town gate
       items: [first aid kit]
   - user: tester3
-    online: false               # nobody at the keyboard: the narrator answers for them
+    online: false               # nobody at the keyboard: the narrator may answer for them
     character:
       name: Saul
       description: An old trader who sells boiled water by the gate.
@@ -25,7 +25,7 @@ players:
 steps:
   - tester1: "? What do I know about this place?"     # ? Question
   - tester1: "! I look for whoever guards the gate."  # ! Action
-  - tester2: '"" You look frozen. Heading in too?'    # "" Dialogue to everyone here
+  - tester2: '"" You look frozen. Heading in too?'    # "" is shorthand for an Action: I say, "..."
   - tester1: '"" Saul, how much for the water?'
   - tester2: "! I walk to the next town. It takes most of the day."   # likely a time skip
   - tester2: "! I keep walking."                      # should be refused until the round
