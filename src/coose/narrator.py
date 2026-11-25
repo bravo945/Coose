@@ -24,6 +24,7 @@ the story's AI settings (aisettings.py).
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -34,6 +35,8 @@ from typing import Callable, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from . import aisettings, game
+
+log = logging.getLogger(__name__)
 
 CORE_RULES = """\
 You are the narrator of a Coose game: a multiplayer roleplay set in the world described below.
@@ -460,6 +463,12 @@ class ClaudeNarrator:
         except anthropic.RateLimitError:
             raise NarratorError("the AI is busy right now; try again in a minute") from None
         except anthropic.APIStatusError as e:
+            detail = api_error_detail(e)
+            log.warning("Claude API error %s on the %s pass (%s, %s effort, thinking %s): %s", e.status_code, label,
+                        settings.model, settings.effort, settings.thinking, detail)
+            if e.status_code == 400:  # the request itself was refused: say why, so the owner can act on it
+                raise NarratorError(f"the AI service refused the request ({detail}). Using {settings.model} for "
+                                    f"{task}; the owner can change it with `coose ai`") from None
             raise NarratorError(f"the AI service returned an error ({e.status_code})") from None
         except anthropic.APIConnectionError:
             raise NarratorError("the server couldn't reach the AI service") from None
@@ -619,6 +628,17 @@ INTERVENTIONS = {
     "rewrite": "A story admin is rewriting a past event. Change the world so that the event happened as they "
     "describe instead, and adjust everything that follows from it.",
 }
+
+
+def api_error_detail(e) -> str:
+    """The API's own explanation of an error, kept short."""
+    body = getattr(e, "body", None)
+    message = ""
+    if isinstance(body, dict):
+        err = body.get("error")
+        message = err.get("message", "") if isinstance(err, dict) else ""
+    message = " ".join(str(message or getattr(e, "message", "") or "").split())
+    return message[:300] or "no details given"
 
 
 def format_minutes(minutes: int) -> str:

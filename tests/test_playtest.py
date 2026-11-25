@@ -178,3 +178,21 @@ def test_models_and_effort_follow_the_story_settings():
     assert sent[0]["fallbacks"] == "default" and "thinking" not in sent[0]
     assert sent[1]["model"] == "claude-haiku-5-5" and sent[1]["output_config"]["effort"] == "low"
     assert sent[1]["thinking"] == {"type": "disabled"} and "fallbacks" not in sent[1]
+
+
+def test_a_refused_request_says_why(caplog):
+    import anthropic
+
+    from coose.narrator import NarratorError
+
+    def handler(request):
+        return httpx2.Response(400, json={"type": "error", "error": {
+            "type": "invalid_request_error", "message": "thinking: something this model doesn't accept"}})
+
+    n = ClaudeNarrator("claude-opus-5-5", "medium", "NONE")
+    n._client = anthropic.Anthropic(api_key="k", max_retries=0,
+                                    http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+    with pytest.raises(NarratorError) as e:
+        n.question("P", scene(), "Who?")
+    assert "something this model doesn't accept" in str(e.value) and "claude-opus-5-5" in str(e.value)
+    assert "something this model doesn't accept" in caplog.text
